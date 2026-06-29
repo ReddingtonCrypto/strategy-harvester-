@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>StrategyHarvester · Monitor</title>
+<style>
+  :root {
+    --bg:#0d1117; --card:#161b22; --border:#30363d; --txt:#e6edf3;
+    --muted:#8b949e; --accent:#2f81f7; --win:#3fb950; --loss:#f85149;
+    --pending:#8b949e; --chip:#21262d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,
+    Arial,sans-serif; padding:16px; max-width:960px; margin:0 auto; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:14px 16px; }
+  .card .label { color:var(--muted); font-size:12px; text-transform:uppercase;
+    letter-spacing:.04em; }
+  .card .value { font-size:24px; font-weight:700; margin-top:6px; }
+  .value.ok { color:var(--win); } .value.bad { color:var(--loss); }
+  h2 { font-size:15px; margin:22px 0 10px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; font-size:13px;
+    background:var(--card); border:1px solid var(--border); border-radius:10px;
+    overflow:hidden; }
+  th,td { padding:9px 10px; text-align:left; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; font-size:11px;
+    text-transform:uppercase; }
+  tr:last-child td { border-bottom:none; }
+  .badge { display:inline-block; min-width:20px; text-align:center;
+    padding:1px 7px; border-radius:20px; font-size:11px; font-weight:700; }
+  .badge.win { background:rgba(63,185,80,.15); color:var(--win); }
+  .badge.loss { background:rgba(248,81,73,.15); color:var(--loss); }
+  .badge.pending { background:var(--chip); color:var(--pending); }
+  .muted { color:var(--muted); font-size:12px; }
+  .chip { display:inline-block; background:var(--chip); border:1px solid var(--border);
+    border-radius:6px; padding:3px 8px; margin:3px 3px 0 0; font-size:12px; }
+  .scroll { overflow-x:auto; }
+  footer { color:var(--muted); font-size:12px; margin:24px 0 8px; text-align:center; }
+</style>
+</head>
+<body>
+  <h1>📡 StrategyHarvester Monitor</h1>
+  <div class="sub">Last scan: <b>2026-06-29 23:51:45</b> UTC ·
+    data source: <b>bybit</b> ·
+    auto-refresh 5 min</div>
+
+  <div class="grid">
+    <div class="card"><div class="label">System</div>
+      <div class="value ok">Healthy ✅</div></div>
+    <div class="card"><div class="label">Scans (today)</div>
+      <div class="value">1</div>
+      <div class="muted">1 all-time</div></div>
+    <div class="card"><div class="label">Signals (today)</div>
+      <div class="value">0</div>
+      <div class="muted">0 all-time</div></div>
+    <div class="card"><div class="label">Coins watched</div>
+      <div class="value">50</div></div>
+  </div>
+
+  <h2>CRT Live Performance (observation mode)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Signals</div>
+      <div class="value">0</div>
+      <div class="muted">0 pending</div></div>
+    <div class="card"><div class="label">Win rate</div>
+      <div class="value">0.0%</div>
+      <div class="muted">0W / 0L</div></div>
+    <div class="card"><div class="label">Profit factor</div>
+      <div class="value">0.00</div>
+      <div class="muted">0 decided</div></div>
+  </div>
+
+  <h2>Signal Log</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
+      <th>Conf</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No signals recorded yet.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Coins Currently Watched</h2>
+  <div><span class="chip">BTC</span><span class="chip">ETH</span><span class="chip">HYPE</span><span class="chip">SOL</span><span class="chip">SLX</span><span class="chip">XRP</span><span class="chip">ARX</span><span class="chip">TAC</span><span class="chip">ENA</span><span class="chip">LINK</span><span class="chip">WLD</span><span class="chip">MNT</span><span class="chip">CAP</span><span class="chip">AAVE</span><span class="chip">AVAX</span><span class="chip">XPL</span><span class="chip">ASTER</span><span class="chip">DOGE</span><span class="chip">XAUT</span><span class="chip">PUMP</span><span class="chip">LTC</span><span class="chip">GRAM</span><span class="chip">LIT</span><span class="chip">INJ</span><span class="chip">IP</span><span class="chip">VIRTUAL</span><span class="chip">SUI</span><span class="chip">NEAR</span><span class="chip">CC</span><span class="chip">ADA</span><span class="chip">BNB</span><span class="chip">ONDO</span><span class="chip">COINX</span><span class="chip">XLM</span><span class="chip">GRASS</span><span class="chip">PEPE</span><span class="chip">VVV</span><span class="chip">BSB</span><span class="chip">BILL</span><span class="chip">TRX</span><span class="chip">H</span><span class="chip">SPCXX</span><span class="chip">WIF</span><span class="chip">BONK</span><span class="chip">MON</span><span class="chip">PENGU</span><span class="chip">SHIB</span><span class="chip">SPX</span><span class="chip">AERO</span><span class="chip">DOT</span></div>
+
+  <footer>Generated 2026-06-29 23:55:14 UTC ·
+    StrategyHarvester · data pulled from local DB</footer>
+</body>
+</html>

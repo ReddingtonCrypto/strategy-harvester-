@@ -86,6 +86,44 @@ Anything left unset degrades gracefully — the scan still runs.
    `chore(cron): update state ...` commit or prints `No state changes to commit`.
 6. After that, the hourly `schedule` trigger takes over automatically.
 
+---
+
+## 4. Enable the monitoring dashboard (GitHub Pages)
+
+Each scan regenerates `docs/index.html` — a dark, mobile-friendly dashboard
+showing last scan time, data source, scan/signal counts, the CRT signal log with
+outcomes, live win-rate/profit-factor, the watched coins, and system health
+(auto-refreshes every 5 minutes). The workflow commits it every run.
+
+To publish it for free:
+
+1. Repo **Settings → Pages**.
+2. **Build and deployment → Source: Deploy from a branch**.
+3. **Branch: `main`** and **folder: `/docs`** → **Save**.
+4. Wait ~1 minute for the first deploy.
+
+> Note: GitHub Pages only serves from `/ (root)` or `/docs` — that's why the
+> dashboard lives in `docs/`, not a custom folder.
+
+**Your dashboard URL:**
+```
+https://reddingtoncrypto.github.io/strategy-harvester-/
+```
+(lowercase; it's `https://<user>.github.io/<repo>/`.)
+
+The page updates whenever a scan commits a new `docs/index.html`, and the browser
+auto-refreshes every 5 minutes.
+
+---
+
+## Telegram monitoring messages
+
+Alongside signal alerts, the scanner now sends (all best-effort, never crash):
+- **Startup** — once per GitHub Actions run: `🚀 Scanner started … via GitHub Actions`
+- **Scan heartbeat** — one line after each scan: `🔍 Scan done HH:MM UTC · 50 coins · 0 signals · data: bybit · next in 1h`. Toggle with config `heartbeat_enabled` (set `false` to silence).
+- **Daily digest** — once per UTC day (first run after 00:00): scans run, signals fired, coins, data source, strategy, health.
+- **Fallback alert** — if the primary data source is geo-blocked and a backup exchange is used: `⚠️ HH:MM UTC · bybit failed, using okx fallback`.
+
 ### Notes / troubleshooting
 
 - **Schedule lag:** GitHub's cron is best-effort and can run several minutes

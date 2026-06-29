@@ -58,20 +58,65 @@ def _load_env() -> None:
         print("ℹ️  No .env file — relying on process env vars (CI mode).")
 
 
+def _next_in_label() -> str:
+    """Human label for the gap until the next cron run (from config)."""
+    import os
+    from utils.helpers import load_config
+    # GitHub Actions cron is hourly by default; allow a config override note.
+    mins = int(load_config().get("cron_interval_minutes", 60))
+    if os.environ.get("CRON_NEXT_IN"):
+        return os.environ["CRON_NEXT_IN"]
+    return f"{mins // 60}h" if mins % 60 == 0 and mins >= 60 else f"{mins}m"
+
+
+def _maybe_daily_digest(telegram_alert, db, data_source: str) -> None:
+    """Send the daily digest once per UTC day (around 00:00), idempotently."""
+    from datetime import datetime, timezone
+    from utils.helpers import load_config
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if db.get_state("last_digest_date") == today:
+        return  # already sent today
+    # Fire on/after 00:00 UTC — the first run of a new UTC day qualifies.
+    scans_today = db.count_scans_on(today)
+    stats = db.get_scan_run_stats()
+    coins = load_config().get("default_assets", [])
+    digest = {
+        "date": today,
+        "scans": scans_today,
+        "signals": stats.get("signals_today", 0),
+        "coins": len(coins),
+        "data_source": data_source,
+        "strategy": "CRT (observation mode)",
+        "healthy": (stats.get("last_status") or "ok") == "ok",
+    }
+    if not telegram_alert.is_configured():
+        return  # nothing to send; don't burn the once-a-day marker
+    if telegram_alert.send_daily_digest(digest):
+        db.set_state("last_digest_date", today)  # mark only on success
+        print(f"📊 [Cron] Daily digest sent for {today}.")
+    else:
+        print("⚠️  [Cron] Daily digest send failed; will retry next run.")
+
+
 def run_once() -> int:
     """Run a single scan cycle. Returns a process exit code (0 ok, 1 fatal)."""
     _setup_console()
     _load_env()
 
+    import os
     from utils import helpers  # noqa: F401 — triggers UTF-8 console setup
-    from utils.helpers import load_config
-    from storage import strategy_store
+    from utils.helpers import load_config, utc_now_str
+    from storage import strategy_store, database as db
     from signals import signal_store
     from signals.market_scanner import run_scan
+    from backtesting import data_fetcher
     from alerts import telegram_alert
+    from monitoring import dashboard
 
     started = datetime.now(timezone.utc)
     coins = load_config().get("default_assets", [])
+    on_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
     print("=" * 60)
     print("  StrategyHarvester — CRON (single scan cycle)")
     print(f"  {len(coins)} coins watched · {started:%Y-%m-%d %H:%M:%S} UTC")
@@ -81,6 +126,14 @@ def run_once() -> int:
         print("⚠️  Telegram not configured — alerts will be skipped. "
               "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
 
+    # Startup notice — one per GitHub Actions run (skipped on local runs so
+    # repeated local testing doesn't spam the chat).
+    if on_actions and telegram_alert.is_configured():
+        telegram_alert.send_startup_notice("GitHub Actions")
+
+    status = "ok"
+    summary: dict = {}
+    data_source = "n/a"
     try:
         # init_db() runs an auto-backup + migrations on every startup.
         strategy_store.init()
@@ -89,15 +142,52 @@ def run_once() -> int:
         signal_store.expire_old_signals()
         summary = run_scan()
         signal_store.update_signal_outcomes()
-    except Exception as exc:  # noqa: BLE001 — surface, notify, fail the job
+
+        # Which data source actually served the scan, and did we fall back?
+        data_source = data_fetcher.active_exchange_id() or "n/a"
+        primary = data_fetcher.configured_primary()
+        if (data_source != "n/a" and primary
+                and data_source != primary and telegram_alert.is_configured()):
+            telegram_alert.send_fallback_notice(primary, data_source)
+            print(f"⚠️  [Cron] Data fallback: {primary} → {data_source}")
+    except Exception as exc:  # noqa: BLE001 — surface, notify, record, fail
+        status = "error"
         print(f"❌ [Cron] Scan cycle failed: {exc!r}")
         try:
             if telegram_alert.is_configured():
                 telegram_alert.send_error_alert(f"Cron scan failed: {exc}")
         except Exception:
             pass
-        return 1
 
+    # --- Monitoring: record the run, heartbeat, digest, dashboard --------
+    # Best-effort — monitoring must never change the job's success/failure.
+    try:
+        db.record_scan_run(
+            utc_now_str(), len(coins), int(summary.get("signals_found", 0)),
+            int(summary.get("alerts_sent", 0)), data_source, status)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  [Cron] Failed to record scan run: {exc}")
+
+    if status == "ok" and telegram_alert.is_configured():
+        try:
+            telegram_alert.send_scan_heartbeat(
+                len(coins), int(summary.get("signals_found", 0)),
+                data_source, _next_in_label())
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  [Cron] Heartbeat failed: {exc}")
+
+    try:
+        _maybe_daily_digest(telegram_alert, db, data_source)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  [Cron] Daily digest check failed: {exc}")
+
+    try:
+        dashboard.generate()
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  [Cron] Dashboard generation failed: {exc}")
+
+    if status == "error":
+        return 1
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     print(f"✅ [Cron] Scan cycle complete in {elapsed:.0f}s — "
           f"{summary.get('signals_found', 0)} signal(s), "

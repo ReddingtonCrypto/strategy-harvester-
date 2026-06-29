@@ -63,6 +63,7 @@
   "trade_size_usd": 100,
   "win_rate_threshold": 50,
   "binance_fee_percent": 0.1,
+  "heartbeat_enabled": true,
   "data_exchange": "bybit",
   "data_exchange_fallbacks": [
     "bybit",

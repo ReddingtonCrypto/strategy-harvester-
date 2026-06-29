@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.helpers import utc_now_str
+
 # Database lives in the project root next to main.py.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "strategy_harvester.db"
@@ -330,6 +332,35 @@ def init_db() -> None:
                     regime      TEXT,
                     confidence  INTEGER,
                     recorded_at TEXT
+                )
+                """
+            )
+
+            # --- Scan runs (monitoring) ---------------------------------
+            # One row per scan cycle (cron run). Powers the heartbeat counts,
+            # daily digest, and the GitHub Pages dashboard.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scan_runs (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scanned_at    TEXT,     -- UTC ISO timestamp
+                    coins_scanned INTEGER,
+                    signals_found INTEGER,
+                    alerts_sent   INTEGER,
+                    data_source   TEXT,     -- e.g. 'bybit' / 'okx'
+                    status        TEXT      -- 'ok' | 'error'
+                )
+                """
+            )
+
+            # --- App state (monitoring) ---------------------------------
+            # Tiny key/value store for cross-run markers (e.g. last digest date)
+            # that must survive the stateless GitHub Actions runs.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_state (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
                 )
                 """
             )
@@ -767,3 +798,90 @@ def get_regime_history(asset: str, limit: int = 50) -> list[dict[str, Any]]:
     except sqlite3.Error as exc:
         print(f"❌ Failed to read regime history: {exc}")
         return []
+
+
+# --- Scan runs (monitoring) ---------------------------------------------
+
+def record_scan_run(scanned_at: str, coins_scanned: int, signals_found: int,
+                    alerts_sent: int, data_source: str, status: str) -> None:
+    """Insert one scan-cycle record (called once per cron run)."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO scan_runs (scanned_at, coins_scanned, "
+                "signals_found, alerts_sent, data_source, status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (scanned_at, int(coins_scanned), int(signals_found),
+                 int(alerts_sent), data_source, status))
+            conn.commit()
+    except sqlite3.Error as exc:
+        print(f"⚠️  Failed to record scan run: {exc}")
+
+
+def get_scan_run_stats() -> dict[str, Any]:
+    """Aggregate scan-run counts (all-time + today) and the last run."""
+    today = utc_now_str()[:10]
+    out = {
+        "scans_total": 0, "scans_today": 0,
+        "signals_total": 0, "signals_today": 0,
+        "last_scan_at": None, "last_status": None, "last_source": None,
+    }
+    try:
+        with get_connection() as conn:
+            r = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(signals_found),0) s "
+                "FROM scan_runs").fetchone()
+            out["scans_total"], out["signals_total"] = r["c"], r["s"]
+            r = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(signals_found),0) s "
+                "FROM scan_runs WHERE substr(scanned_at,1,10)=?",
+                (today,)).fetchone()
+            out["scans_today"], out["signals_today"] = r["c"], r["s"]
+            last = conn.execute(
+                "SELECT scanned_at, status, data_source FROM scan_runs "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+            if last:
+                out["last_scan_at"] = last["scanned_at"]
+                out["last_status"] = last["status"]
+                out["last_source"] = last["data_source"]
+    except sqlite3.Error as exc:
+        print(f"⚠️  Failed to read scan stats: {exc}")
+    return out
+
+
+def count_scans_on(date_str: str) -> int:
+    """Number of scan runs recorded on a given UTC date (YYYY-MM-DD)."""
+    try:
+        with get_connection() as conn:
+            r = conn.execute(
+                "SELECT COUNT(*) c FROM scan_runs WHERE substr(scanned_at,1,10)=?",
+                (date_str,)).fetchone()
+            return int(r["c"])
+    except sqlite3.Error:
+        return 0
+
+
+# --- App state (monitoring) ---------------------------------------------
+
+def get_state(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Read a value from the app_state key/value store."""
+    try:
+        with get_connection() as conn:
+            r = conn.execute(
+                "SELECT value FROM app_state WHERE key=?", (key,)).fetchone()
+            return r["value"] if r else default
+    except sqlite3.Error:
+        return default
+
+
+def set_state(key: str, value: str) -> None:
+    """Write a value to the app_state key/value store (upsert)."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)))
+            conn.commit()
+    except sqlite3.Error as exc:
+        print(f"⚠️  Failed to set state {key}: {exc}")

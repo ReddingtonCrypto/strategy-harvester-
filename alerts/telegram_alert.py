@@ -271,6 +271,48 @@ def send_message(text: str) -> bool:
     return _send(text)
 
 
+# --- Agent monitoring messages (scanner observability) -------------------
+
+def send_scan_heartbeat(coins: int, signals: int, data_source: str,
+                        next_in: str) -> bool:
+    """One-line proof-of-life after each scan (toggle: config heartbeat_enabled).
+
+    Example: 🔍 Scan done 23:29 UTC · 50 coins · 0 signals · data: bybit · next in 1h
+    """
+    if not load_config().get("heartbeat_enabled", True):
+        return False
+    when = utc_now_str()[11:16]  # HH:MM
+    sig_word = "signal" if signals == 1 else "signals"
+    return _send(f"🔍 Scan done {when} UTC · {coins} coins · "
+                 f"{signals} {sig_word} · data: {data_source} · next in {next_in}")
+
+
+def send_startup_notice(trigger: str = "GitHub Actions") -> bool:
+    """Announce that a scanner run has started (sent once per run)."""
+    return _send(f"🚀 Scanner started {utc_now_str()} UTC via {trigger}")
+
+
+def send_fallback_notice(primary: str, actual: str) -> bool:
+    """Warn that the primary data source failed and a fallback is in use."""
+    return _send(f"⚠️ {utc_now_str()[11:16]} UTC · {primary} failed, "
+                 f"using {actual} fallback")
+
+
+def send_daily_digest(digest: dict[str, Any]) -> bool:
+    """Send the once-a-day rollup of scanner activity."""
+    d = digest or {}
+    health = "healthy ✅" if d.get("healthy", True) else "degraded ⚠️"
+    return _send("\n".join([
+        f"📊 Daily Report {d.get('date', utc_now_str()[:10])}",
+        f"Scans run: {d.get('scans', 0)}",
+        f"Signals fired: {d.get('signals', 0)}",
+        f"Coins watched: {d.get('coins', 0)}",
+        f"Data source: {d.get('data_source', 'n/a')}",
+        f"Strategy: {d.get('strategy', 'CRT (observation mode)')}",
+        f"Uptime: {health}",
+    ]))
+
+
 # --- Approval listener (Phase 4) -----------------------------------------
 
 _listener_thread: Optional[threading.Thread] = None

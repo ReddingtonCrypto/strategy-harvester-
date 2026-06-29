@@ -76,6 +76,25 @@ def _geo_blocked(exc: Exception) -> bool:
             or "service unavailable from a restricted" in msg)
 
 
+def active_source() -> Optional[str]:
+    """The label of the currently-selected source, e.g. 'bybit@bytick.com'.
+
+    None until the first fetch builds an exchange. Use `active_exchange_id()`
+    for the bare exchange (mirror host stripped).
+    """
+    return _EXCHANGE_NAME
+
+
+def active_exchange_id() -> Optional[str]:
+    """The bare exchange id of the active source ('bybit' for 'bybit@bytick.com')."""
+    return _EXCHANGE_NAME.split("@")[0] if _EXCHANGE_NAME else None
+
+
+def configured_primary() -> str:
+    """The exchange the user configured as primary (default 'bybit')."""
+    return str(load_config().get("data_exchange", "bybit")).lower()
+
+
 def _candidate_exchanges() -> list[str]:
     """Ordered, de-duplicated list of exchanges to try (primary first)."""
     config = load_config()
