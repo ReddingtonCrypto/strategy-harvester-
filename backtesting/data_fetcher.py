@@ -1,9 +1,21 @@
 """
 Historical market-data fetcher (Phase 2).
 
-Uses CCXT against Binance to pull OHLCV candles and caches them locally as CSV
-so repeated backtests don't re-hit the API. Binance public OHLCV needs no API
-key; keys (from .env) are used only to raise rate limits when present.
+Uses CCXT to pull OHLCV candles and caches them locally as CSV so repeated
+backtests don't re-hit the API. Public spot OHLCV needs no API key.
+
+Exchange selection
+------------------
+The data source is config-driven (`data_exchange`, default "bybit"). Binance.com
+geo-blocks US servers (HTTP 451), which breaks the cloud/GitHub-Actions scanner,
+so we default to **Bybit** (no key needed, works from US, matches the mentor's
+charts). If the primary exchange is geo-blocked or unreachable, we fall through
+a configurable chain (`data_exchange_fallbacks`: bybit → okx → kucoin → kraken)
+and use the first one that actually returns data. Set `data_exchange` to
+"binance" to force the original path when running locally where Binance works.
+
+All exchanges are used in **spot** mode with CCXT's unified BTC/USDT symbols, so
+the top-50 picker and the candle fetcher always agree on what's fetchable.
 
 Public entry point:
     fetch_ohlcv(symbol, timeframe, months=12) -> pandas.DataFrame
@@ -44,28 +56,110 @@ def _cache_path(symbol: str, timeframe: str) -> Path:
 # heavy load_markets(). Reusing the instance also lets CCXT's rate limiter track
 # request timing across the whole scan (50 coins × 3 timeframes).
 _EXCHANGE = None
+_EXCHANGE_NAME = None
+
+# Default fallback order if config doesn't specify one. Binance is intentionally
+# NOT here — it geo-blocks US/cloud servers (451). Add it via config to use it.
+_DEFAULT_FALLBACKS = ["bybit", "okx", "kucoin", "kraken"]
+
+# Alternate (mirror) hostnames to try when an exchange's primary domain is
+# unreachable. Bybit's api.bybit.com is DNS-blocked on some ISPs/regions; its
+# official api.bytick.com mirror serves the same data and resolves everywhere.
+_MIRROR_HOSTNAMES = {"bybit": ["bytick.com"]}
+
+
+def _geo_blocked(exc: Exception) -> bool:
+    """True if the error looks like a geo-block / region restriction (HTTP 451)."""
+    msg = str(exc).lower()
+    return ("451" in msg or "restricted location" in msg
+            or "eligibility" in msg or "not available in" in msg
+            or "service unavailable from a restricted" in msg)
+
+
+def _candidate_exchanges() -> list[str]:
+    """Ordered, de-duplicated list of exchanges to try (primary first)."""
+    config = load_config()
+    primary = str(config.get("data_exchange", "bybit")).lower()
+    fallbacks = config.get("data_exchange_fallbacks", _DEFAULT_FALLBACKS)
+    chain = [primary] + [str(x).lower() for x in fallbacks]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in chain:
+        if name and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def _make_client(name: str, hostname: Optional[str] = None):
+    """Construct a single CCXT spot client by exchange id (no verification).
+
+    `hostname` optionally overrides the API domain (e.g. Bybit's bytick mirror).
+    """
+    import ccxt
+
+    if not hasattr(ccxt, name):
+        raise ValueError(f"Unknown CCXT exchange '{name}'.")
+    params = {
+        "enableRateLimit": True,        # CCXT auto-throttles to avoid bans.
+        "options": {"defaultType": "spot"},  # spot candles only — no perps.
+    }
+    if hostname:
+        params["hostname"] = hostname   # CCXT rebuilds api URLs from {hostname}.
+    # API keys only help on Binance (higher rate limits); other exchanges need
+    # no key for public spot OHLCV.
+    if name == "binance":
+        api_key = get_env("BINANCE_API_KEY")
+        api_secret = get_env("BINANCE_API_SECRET")
+        if api_key and api_secret:
+            params["apiKey"] = api_key
+            params["secret"] = api_secret
+    return getattr(ccxt, name)(params)
+
+
+def _host_attempts(name: str) -> list[Optional[str]]:
+    """Hostnames to try for `name`: the default (None) then any mirrors."""
+    config = load_config()
+    overrides = config.get("data_exchange_hostnames", {}) or {}
+    mirrors = overrides.get(name, _MIRROR_HOSTNAMES.get(name, []))
+    return [None] + [str(h) for h in mirrors]
 
 
 def _build_exchange(force_new: bool = False):
-    """Return a shared, configured CCXT Binance client (keys optional)."""
-    global _EXCHANGE
+    """Return a shared CCXT spot client, falling through geo-blocks.
+
+    Tries each exchange in `_candidate_exchanges()`, verifying reachability with
+    load_markets() (where a 451 geo-block surfaces). Caches the first that works.
+    """
+    global _EXCHANGE, _EXCHANGE_NAME
     if _EXCHANGE is not None and not force_new:
         return _EXCHANGE
-    try:
-        import ccxt
-    except ImportError as exc:
-        raise RuntimeError(
-            "ccxt is not installed (pip install ccxt)."
-        ) from exc
 
-    params = {"enableRateLimit": True}  # CCXT auto-throttles to avoid bans.
-    api_key = get_env("BINANCE_API_KEY")
-    api_secret = get_env("BINANCE_API_SECRET")
-    if api_key and api_secret:
-        params["apiKey"] = api_key
-        params["secret"] = api_secret
-    _EXCHANGE = ccxt.binance(params)
-    return _EXCHANGE
+    try:
+        import ccxt  # noqa: F401 — ensure the dependency exists up front
+    except ImportError as exc:
+        raise RuntimeError("ccxt is not installed (pip install ccxt).") from exc
+
+    errors: list[str] = []
+    for name in _candidate_exchanges():
+        for host in _host_attempts(name):
+            label = name if host is None else f"{name}@{host}"
+            try:
+                client = _make_client(name, host)
+                client.load_markets()  # geo-block / network errors surface here
+            except Exception as exc:  # noqa: BLE001 — try next host/exchange
+                tag = "geo-blocked" if _geo_blocked(exc) else "unavailable"
+                short = str(exc).replace("\n", " ")[:90]
+                print(f"⚠️  [Data] {label} {tag} ({short}); trying next source...")
+                errors.append(f"{label}: {short}")
+                continue
+            _EXCHANGE = client
+            _EXCHANGE_NAME = label
+            print(f"🌐 [Data] Market-data source: {label} (spot)")
+            return _EXCHANGE
+
+    raise RuntimeError(
+        "No usable market-data exchange. Tried " + " | ".join(errors))
 
 
 def fetch_ohlcv(
@@ -113,7 +207,7 @@ def fetch_ohlcv(
     df = _download(symbol, timeframe, months)
 
     if df.empty:
-        print("⚠️  No data returned from Binance.")
+        print(f"⚠️  No data returned from {_EXCHANGE_NAME or 'exchange'}.")
         return df
 
     # --- Save cache -----------------------------------------------------
@@ -253,7 +347,7 @@ def _empty_ohlcv() -> pd.DataFrame:
 
 
 def _download(symbol: str, timeframe: str, months: int) -> pd.DataFrame:
-    """Page through Binance OHLCV from `months` ago until now."""
+    """Page through the active exchange's OHLCV from `months` ago until now."""
     exchange = _build_exchange()
 
     tf_ms = _TF_MS.get(timeframe)
@@ -266,7 +360,7 @@ def _download(symbol: str, timeframe: str, months: int) -> pd.DataFrame:
     now_ms = exchange.milliseconds()
     # Approximate a month as 30 days for the lookback window.
     since = now_ms - months * 30 * 86_400_000
-    limit = 1000  # Binance max candles per request.
+    limit = 1000  # Per-request candle cap (Bybit/Binance/OKX all allow 1000).
 
     all_rows: list[list] = []
     safety_counter = 0
@@ -277,7 +371,7 @@ def _download(symbol: str, timeframe: str, months: int) -> pd.DataFrame:
         try:
             batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
         except Exception as exc:
-            print(f"❌ Binance fetch failed: {exc}")
+            print(f"❌ {_EXCHANGE_NAME or 'Exchange'} fetch failed: {exc}")
             # Give the API a moment, then stop rather than loop forever.
             time.sleep(1.0)
             break
@@ -295,7 +389,13 @@ def _download(symbol: str, timeframe: str, months: int) -> pd.DataFrame:
         # Be polite even though enableRateLimit already throttles.
         time.sleep(0.2)
 
-        if len(batch) < limit:
+        # Stop only once we've actually reached the present. We can't use
+        # `len(batch) < limit` as the end-of-history signal: Bybit (and others)
+        # return ~999 per page even mid-history, which would truncate the year.
+        # The `since >= now_ms` loop guard plus the empty-batch break above are
+        # the real termination; this just avoids a redundant final request once
+        # the newest candle is within one bar of now.
+        if last_ts + tf_ms >= now_ms:
             break  # Reached the most recent candle.
 
     print()  # newline after the progress line
