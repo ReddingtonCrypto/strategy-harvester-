@@ -106,15 +106,29 @@ def generate_report(
     sharpe = _sharpe(per_trade_returns)
 
     # --- Verdict --------------------------------------------------------
+    # Profit factor is a truer measure of edge than win rate alone: a strategy
+    # with sub-50% wins but large winners (high PF) is still profitable.
+    #   PASS     : win_rate >= threshold  OR  (PF >= 1.3 AND trades >= 10)
+    #   MARGINAL : promising but small sample — PF >= 1.2 AND trades < 10
+    #   FAIL     : otherwise
     if total == 0:
         verdict = "FAIL"
         reason = "No trades were generated, so the strategy cannot pass."
     elif win_rate >= pass_threshold:
         verdict = "PASS"
         reason = f"Win rate {win_rate}% meets/exceeds {pass_threshold}% threshold."
+    elif profit_factor >= 1.3 and total >= 10:
+        verdict = "PASS"
+        reason = (f"Profit factor {profit_factor} (>=1.3) over {total} trades "
+                  f"shows a real edge despite a {win_rate}% win rate.")
+    elif profit_factor >= 1.2 and total < 10:
+        verdict = "MARGINAL"
+        reason = (f"Profit factor {profit_factor} (>=1.2) is promising but only "
+                  f"{total} trades — too small a sample to confirm. Observe.")
     else:
         verdict = "FAIL"
-        reason = f"Win rate {win_rate}% is below the {pass_threshold}% threshold."
+        reason = (f"Win rate {win_rate}% below {pass_threshold}% and profit "
+                  f"factor {profit_factor} too low over {total} trades.")
 
     trade_records = [
         TradeRecord(
@@ -157,7 +171,8 @@ def generate_report(
 
 def print_report(report: BacktestReport) -> None:
     """Print a formatted Backtest Report box to the terminal."""
-    win_emoji = "✅" if report.verdict == "PASS" else "❌"
+    _emoji = {"PASS": "✅", "MARGINAL": "🟡", "FAIL": "❌"}
+    win_emoji = _emoji.get(report.verdict, "❌")
     body = (
         f"Strategy : {report.strategy_name}\n"
         f"Period   : {report.period_start} → {report.period_end}\n"
@@ -178,7 +193,7 @@ def print_report(report: BacktestReport) -> None:
 
     title = f"BACKTEST REPORT — {report.asset}"
     if _HAS_RICH:
-        colour = "green" if report.verdict == "PASS" else "red"
+        colour = {"PASS": "green", "MARGINAL": "yellow"}.get(report.verdict, "red")
         _console.print(Panel(body, title=title, border_style=colour, expand=False))
     else:
         line = "═" * 44

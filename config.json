@@ -123,6 +123,7 @@
   "range_require_mid_reclaim": true,
   "smc_stop_buffer_atr": 1.0,
   "smc_min_rr": 1.5,
+  "frvp_bins": 24,
   "scan_delay_between_coins_seconds": 0.25,
   "topcoin_refresh_time_utc": "00:30",
   "observation_mode_strategies": [

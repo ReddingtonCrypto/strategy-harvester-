@@ -19,7 +19,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from smart_money import (displacement, fvg, market_structure, order_blocks,
-                         ranges, swing_detector)
+                         ranges, swing_detector, volume_profile)
 from smart_money.fib_zones import in_discount_zone
 from utils.helpers import load_config
 
@@ -168,6 +168,41 @@ def signal_crt(df: pd.DataFrame) -> list[dict[str, Any]]:
     return entries
 
 
+def signal_frvp(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """FRVP card: in a range, a reclaim of VAL after sweeping below it → LONG,
+    target POC (the volume magnet).
+
+    Filters: only fires when the window is a range (mentor's rule); stop = swept
+    low − ATR buffer; min R:R gate. Entry requires room below the POC.
+    """
+    if df is None or len(df) < 30:
+        return []
+    lb = int(load_config().get("range_lookback", 40))
+    frac = _frac()
+    df = df.reset_index(drop=True)
+    atr = _atr_series(df)
+    entries: list[dict[str, Any]] = []
+    for i in range(lb, len(df)):
+        window = df.iloc[i - lb:i]
+        if not ranges.detect_range(window)["is_range"]:  # FRVP only in ranges
+            continue
+        prof = volume_profile.compute_frvp(window)
+        if not prof:
+            continue
+        val, poc = prof["val"], prof["poc"]
+        cur = df.iloc[i]
+        low, close = float(cur["low"]), float(cur["close"])
+        # LONG: swept below VAL, closed back above it, with room up to the POC.
+        if low < val * (1 - frac) and val < close < poc:
+            stop = _buffered_stop(low, atr[i])
+            if not _rr_ok(close, stop, poc):
+                continue
+            entries.append({"index": i, "direction": "LONG", "entry": close,
+                            "target": poc, "stop": stop, "type": "frvp",
+                            "val": val, "poc": poc, "vah": prof["vah"]})
+    return entries
+
+
 def signal_textbook(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Textbook A+: downtrend → MSS-up → retrace into discount zone → LONG.
 
@@ -242,6 +277,7 @@ _SIGNALS = {
     "range": signal_range_strategy,
     "crt": signal_crt,
     "textbook": signal_textbook,
+    "frvp": signal_frvp,
 }
 
 

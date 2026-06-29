@@ -55,7 +55,7 @@ class BacktestReport(BaseModel):
     sharpe_ratio: float = 0.0
     total_signals_generated: int = 0
 
-    verdict: Literal["PASS", "FAIL"] = "FAIL"
+    verdict: Literal["PASS", "MARGINAL", "FAIL"] = "FAIL"
     verdict_reason: str = ""
 
     trades_log: list[TradeRecord] = Field(default_factory=list)

@@ -7,9 +7,13 @@
 .tg_offset
 
 # Local database + backups
+# NOTE: the main DB is deliberately COMMITTED so state persists between
+# stateless GitHub Actions cron runs (see SETUP_GITHUB_ACTIONS.md). Only the
+# backups / corrupt snapshots / other sqlite files are ignored.
 *.db
 *.sqlite
 *.sqlite3
+!strategy_harvester.db
 strategy_harvester.db.corrupt_*
 backups/
 
