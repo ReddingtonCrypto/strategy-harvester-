@@ -1,0 +1,21 @@
+# ===== StrategyHarvester — PRODUCTION (cloud) dependencies =====
+# Only what the 24/7 scanner + learning engine needs on the server.
+# Pinned to the versions verified in development for reproducibility.
+#
+# Deliberately EXCLUDED (ingestion-only, not run on the server):
+#   openai-whisper, torch, numba   (local audio/video transcription)
+#   yt-dlp                          (YouTube download)
+#   instaloader                     (Instagram)
+#   telethon                        (Telegram channel reader)
+#   Pillow                          (image reading)
+#   fastapi, uvicorn                (the REST API is not run in prod)
+
+ccxt==4.5.61            # Binance market data (scanner + backtests)
+pandas==3.0.3           # OHLCV / indicators / smart-money engine
+numpy==2.4.6            # numeric helpers
+requests==2.34.2        # Telegram Bot API
+anthropic==0.112.0      # daily learning/adaptation analysis (Claude Opus 4.8)
+python-dotenv==1.2.2    # load .env
+pydantic==2.13.4        # data models
+tweepy==4.16.0          # X (Twitter) scraping every 6h (optional, degrades gracefully)
+rich==15.0.0            # pretty scan-summary output (optional)

@@ -1,0 +1,41 @@
+# ===== StrategyHarvester — Phase 1 dependencies (all free) =====
+
+# --- Content ingestion ---
+youtube-transcript-api      # Pull YouTube captions/transcripts
+yt-dlp                      # Download audio when no transcript exists
+openai-whisper              # Local speech-to-text fallback (no API cost)
+telethon                    # Read public Telegram channels
+
+# --- AI extraction ---
+anthropic                   # Claude API client (AUTO mode only)
+
+# --- Config & secrets ---
+python-dotenv               # Load secrets from .env
+
+# --- API layer ---
+fastapi                     # REST API for the future frontend
+uvicorn[standard]           # ASGI server to run FastAPI
+
+# --- Data & UX ---
+pydantic                    # Data validation / Strategy Card model
+rich                        # Pretty terminal output
+
+# --- Phase 2: backtesting ---
+ccxt                        # Historical OHLCV from Binance (public API)
+pandas                      # OHLCV dataframes & analysis
+numpy                       # Numeric helpers / metrics
+pandas-ta                   # Technical indicators (Python <3.14 only; the
+                            # indicator engine falls back to a built-in pandas
+                            # implementation when pandas-ta is unavailable)
+
+# --- Phase 3: live signals + alerts ---
+requests                    # Telegram Bot API calls
+schedule                    # (optional) scheduling helper
+pytz                        # (optional) timezone helpers; stdlib UTC is used
+
+# --- Phase 5: image intelligence + X scraping/sentiment ---
+tweepy                      # Twitter/X API client
+Pillow                      # Image handling (validation/format)
+# (image vision + sentiment use the existing 'anthropic' client)
+
+# NOTE: sqlite3 is part of the Python standard library (no install needed).

@@ -1,0 +1,45 @@
+# Secrets — never commit
+.env
+
+# Telegram session files
+*.session
+*.session-journal
+.tg_offset
+
+# Local database + backups
+*.db
+*.sqlite
+*.sqlite3
+strategy_harvester.db.corrupt_*
+backups/
+
+# Runtime logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Exports / downloads / transcripts
+exports/
+whatsapp_transcripts_english/
+*.tmp
+*.wav
+*.mp3
+*.m4a
+
+# Cached market data (Phase 2)
+data/cache/
+data/
+
+# Whisper model cache (Phase 5.6)
+.whisper_models/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
