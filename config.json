@@ -136,5 +136,17 @@
   "topcoin_refresh_time_utc": "00:30",
   "observation_mode_strategies": [
     "e01bfc42adad"
+  ],
+  "shadow_strategies": [
+    "e9a1e9050a11"
+  ],
+  "scan_timeframes": [
+    "15m",
+    "1h",
+    "4h",
+    "1d"
+  ],
+  "crt_live_timeframes": [
+    "4h"
   ]
 }

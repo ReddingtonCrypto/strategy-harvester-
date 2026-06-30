@@ -61,6 +61,11 @@ class Signal(BaseModel):
     alerted: bool = False
     alert_sent_at: Optional[str] = None
 
+    # Shadow mode: 'live' signals send Telegram alerts; 'shadow' signals are
+    # logged + outcome-tracked only (untested strategy/timeframe combos we want
+    # to observe in the dashboard without firing fake live alerts).
+    mode: Literal["live", "shadow"] = "live"
+
     # Outcome tracking (filled by signal_store.update_signal_outcomes).
     outcome_1h: Optional[float] = None
     outcome_4h: Optional[float] = None

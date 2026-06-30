@@ -48,6 +48,48 @@ def _passed_strategies() -> list:
     ]
 
 
+def _scan_strategies() -> list:
+    """Strategies to actually scan: all PASSED cards PLUS any shadow-mode cards.
+
+    Shadow strategies (config `shadow_strategies`) run + log even if they did
+    NOT pass backtest, so we can observe them live without alerting. Failed
+    strategies that are NOT in the shadow list (Range/Textbook/CISD) stay out.
+    """
+    cards = _passed_strategies()
+    have = {c.id for c in cards}
+    shadow_ids = set(load_config().get("shadow_strategies", []))
+    for sid in shadow_ids:
+        if sid in have:
+            continue
+        card = strategy_store.get_card(sid)
+        if card is not None:
+            cards.append(card)
+            have.add(sid)
+    return cards
+
+
+def signal_mode(card, timeframe: str) -> str:
+    """'shadow' or 'live' for this strategy on this timeframe.
+
+    - Any strategy in config `shadow_strategies` is always 'shadow'.
+    - Otherwise a per-signal live-timeframe allowlist applies: config key
+      `<engine_signal>_live_timeframes` (e.g. `crt_live_timeframes`). If set and
+      the timeframe isn't in it, the combo runs 'shadow' (logged, not alerted).
+      This keeps CRT live ONLY on its backtested 4h timeframe while still
+      observing 15m/1h/1d in shadow.
+    - No allowlist configured → 'live'.
+    """
+    config = load_config()
+    if card.id in set(config.get("shadow_strategies", [])):
+        return "shadow"
+    sig = (getattr(card, "engine_signal", "") or "").lower()
+    allow = config.get(f"{sig}_live_timeframes")
+    if allow:
+        if timeframe.lower() not in {str(t).lower() for t in allow}:
+            return "shadow"
+    return "live"
+
+
 def run_scan() -> dict[str, Any]:
     """Run one full scan across all strategies/coins/timeframes.
 
@@ -55,7 +97,11 @@ def run_scan() -> dict[str, Any]:
     """
     config = load_config()
     assets = config.get("default_assets", ["BTC", "ETH", "SOL", "BNB"])
-    timeframes = config.get("default_timeframes", ["1H", "4H", "1D"])
+    # Multi-timeframe scan list (default 15m/1h/4h/1d). Falls back to the older
+    # default_timeframes key for backward compatibility.
+    timeframes = config.get(
+        "scan_timeframes",
+        config.get("default_timeframes", ["15m", "1h", "4h", "1d"]))
     min_conf = float(config.get("min_confidence_to_alert", 60))
     expiry_candles = int(config.get("signal_expiry_candles", 3))
     max_signals = int(config.get("max_signals_per_scan", 10))
@@ -63,13 +109,14 @@ def run_scan() -> dict[str, Any]:
     coin_delay = float(config.get("scan_delay_between_coins_seconds", 0.25))
     observation_ids = set(config.get("observation_mode_strategies", []))
 
-    strategies = _passed_strategies()
+    strategies = _scan_strategies()
 
     summary = {
         "timestamp": utc_now_str(), "active_strategies": len(strategies),
         "coins": len(assets), "timeframes": len(timeframes),
-        "signals_found": 0, "alerts_sent": 0, "skipped_low_conf": 0,
-        "skipped_duplicate": 0, "next_scan_minutes": interval,
+        "signals_found": 0, "alerts_sent": 0, "shadow_logged": 0,
+        "skipped_low_conf": 0, "skipped_duplicate": 0,
+        "next_scan_minutes": interval,
     }
 
     if not strategies:
@@ -200,13 +247,13 @@ def run_scan() -> dict[str, Any]:
                           f"skipped.")
                     continue
 
-                if alerts_budget <= 0:
-                    print("🛑 [Scanner] Max signals per scan reached.")
-                    break
+                # --- Shadow vs live (untested combos are logged, not alerted) -
+                mode = signal_mode(card, tf)
 
                 signal = _build_signal(
                     card, symbol, tf, det, ctx, confluence_count,
                     confluence_names, aligned, final_conf, expiry_candles)
+                signal.mode = mode
 
                 # --- Sentiment enhancement (keyword-based, zero LLM) ------
                 # Adjusts signal.confidence_score in place; never blocks.
@@ -216,7 +263,20 @@ def run_scan() -> dict[str, Any]:
                 trust = _trust_for(card.id)
                 observation = card.id in observation_ids
 
+                # Persist EVERY signal (shadow + live) — outcomes tracked alike.
                 signal_store.save_signal(signal)
+
+                if mode == "shadow":
+                    summary["shadow_logged"] += 1
+                    print(f"👻 [Scanner] SHADOW {card.name} {symbol} {tf} "
+                          f"logged (no alert).")
+                    continue
+
+                # Live alerts respect the per-scan alert budget (shadow doesn't).
+                if alerts_budget <= 0:
+                    print("🛑 [Scanner] Max LIVE alerts per scan reached "
+                          "(signal still logged).")
+                    continue
 
                 if _send_alert(signal, sentiment, trust, regime, observation):
                     summary["alerts_sent"] += 1
@@ -371,7 +431,8 @@ def _print_summary(s: dict[str, Any]) -> None:
         f"Coins scanned     : {s['coins']}\n"
         f"Timeframes        : {s['timeframes']}\n"
         f"Signals found     : {s['signals_found']}\n"
-        f"Alerts sent       : {s['alerts_sent']}\n"
+        f"Live alerts sent  : {s['alerts_sent']}\n"
+        f"Shadow logged     : {s.get('shadow_logged', 0)}\n"
         f"Skipped (low conf): {s['skipped_low_conf']}\n"
         f"Skipped (dup)     : {s['skipped_duplicate']}\n"
         f"Next scan in      : {s['next_scan_minutes']} min"

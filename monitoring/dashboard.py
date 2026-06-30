@@ -34,11 +34,22 @@ def _signal_rows() -> list[dict[str, Any]]:
             rows = conn.execute(
                 "SELECT strategy_name, asset, timeframe, entry_price_at_signal, "
                 "confidence_score, outcome_result, outcome_pct_move, "
-                "date_generated FROM signals ORDER BY date_generated DESC"
+                "COALESCE(mode,'live') AS mode, date_generated "
+                "FROM signals ORDER BY date_generated DESC"
             ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error:
         return []
+
+
+def _short_name(strategy_name: str) -> str:
+    """Compact label for a strategy ('CRT …' → 'CRT', 'Volume Profile FRVP' → 'FRVP')."""
+    n = (strategy_name or "").upper()
+    for tag in ("CRT", "FRVP", "RANGE", "TEXTBOOK", "CISD"):
+        if tag in n:
+            return tag
+    # else first word of the original (preserve case)
+    return (strategy_name or "?").split(" (")[0].split()[0]
 
 
 def _performance(signals: list[dict[str, Any]]) -> dict[str, Any]:
@@ -70,14 +81,24 @@ def build_stats() -> dict[str, Any]:
     """Aggregate all dashboard data from the DB + config."""
     scan = db.get_scan_run_stats()
     signals = _signal_rows()
-    perf = _performance(signals)
+    live_signals = [s for s in signals if s.get("mode") != "shadow"]
+    shadow_signals = [s for s in signals if s.get("mode") == "shadow"]
     coins = load_config().get("default_assets", [])
     healthy = (scan.get("last_status") or "ok") == "ok"
+
+    # Per strategy+timeframe+mode breakdown, with a compact display label.
+    breakdown = db.signal_breakdown()
+    for b in breakdown:
+        b["label"] = _short_name(b["strategy_name"])
     return {
         "generated_at": utc_now_str(),
         "scan": scan,
         "signals": signals,
-        "performance": perf,
+        "live_signals": live_signals,
+        "shadow_signals": shadow_signals,
+        "performance": _performance(live_signals),       # headline = live only
+        "shadow_performance": _performance(shadow_signals),
+        "breakdown": breakdown,
         "coins": coins,
         "healthy": healthy,
         "data_source": scan.get("last_source") or "n/a",
@@ -119,6 +140,31 @@ def _signal_rows_html(signals: list[dict[str, Any]]) -> str:
             f"<td>{entry_str}</td><td>{conf}</td>"
             f"<td>{_outcome_badge(s.get('outcome_result'))} "
             f'<span class="muted">{move_str}</span></td></tr>')
+    return "\n".join(out)
+
+
+def _breakdown_html(breakdown: list[dict[str, Any]]) -> str:
+    """Rows for the strategy×timeframe×mode performance table."""
+    if not breakdown:
+        return ('<tr><td colspan="6" class="muted" '
+                'style="text-align:center;padding:20px">'
+                'No signals logged yet.</td></tr>')
+    out = []
+    for b in breakdown:
+        live = b["mode"] == "live"
+        tag = ('<span class="badge live">LIVE</span>' if live
+               else '<span class="badge shadow">shadow</span>')
+        pf = b["profit_factor"]
+        pf_str = "∞" if pf >= 999 else f"{pf:.2f}"
+        out.append(
+            f"<tr><td><b>{_esc(b['label'])}</b> "
+            f'<span class="muted">{_esc(b["timeframe"])}</span></td>'
+            f"<td>{tag}</td>"
+            f"<td>{b['signals']}</td>"
+            f"<td>{b['win_rate']}%</td>"
+            f"<td>{pf_str}</td>"
+            f'<td class="muted">{b["wins"]}W/{b["losses"]}L/'
+            f'{b["pending"]}P</td></tr>')
     return "\n".join(out)
 
 
@@ -179,6 +225,9 @@ def render(stats: dict[str, Any]) -> str:
   .badge.win {{ background:rgba(63,185,80,.15); color:var(--win); }}
   .badge.loss {{ background:rgba(248,81,73,.15); color:var(--loss); }}
   .badge.pending {{ background:var(--chip); color:var(--pending); }}
+  .badge.live {{ background:rgba(47,129,247,.18); color:var(--accent); }}
+  .badge.shadow {{ background:var(--chip); color:var(--muted);
+    border:1px solid var(--border); }}
   .muted {{ color:var(--muted); font-size:12px; }}
   .chip {{ display:inline-block; background:var(--chip); border:1px solid var(--border);
     border-radius:6px; padding:3px 8px; margin:3px 3px 0 0; font-size:12px; }}
@@ -205,9 +254,9 @@ def render(stats: dict[str, Any]) -> str:
       <div class="value">{len(stats['coins'])}</div></div>
   </div>
 
-  <h2>CRT Live Performance (observation mode)</h2>
+  <h2>CRT Live Performance (4h · observation mode)</h2>
   <div class="grid">
-    <div class="card"><div class="label">Signals</div>
+    <div class="card"><div class="label">Live signals</div>
       <div class="value">{perf['total']}</div>
       <div class="muted">{perf['pending']} pending</div></div>
     <div class="card"><div class="label">Win rate</div>
@@ -218,13 +267,38 @@ def render(stats: dict[str, Any]) -> str:
       <div class="muted">{perf['decided']} decided</div></div>
   </div>
 
-  <h2>Signal Log</h2>
+  <h2>Performance by Strategy &amp; Timeframe</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Live alerts fire ONLY from CRT 4h. Everything else is shadow (logged, not
+    alerted) — compare here before promoting any combo.</div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Strategy / TF</th><th>Mode</th><th>Signals</th>
+      <th>Win%</th><th>PF</th><th>W/L/Pending</th></tr></thead>
+    <tbody>
+      {_breakdown_html(stats['breakdown'])}
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Live Signal Log (CRT 4h)</h2>
   <div class="scroll">
   <table>
     <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
       <th>Conf</th><th>Outcome</th></tr></thead>
     <tbody>
-      {_signal_rows_html(stats['signals'])}
+      {_signal_rows_html(stats['live_signals'])}
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Shadow Signal Log (logged, not alerted)</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
+      <th>Conf</th><th>Outcome</th></tr></thead>
+    <tbody>
+      {_signal_rows_html(stats['shadow_signals'])}
     </tbody>
   </table>
   </div>

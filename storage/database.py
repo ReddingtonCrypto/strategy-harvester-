@@ -379,6 +379,9 @@ def init_db() -> None:
                 "engine_signal": "TEXT",
                 "uses_deviation_filter": "INTEGER",
             })
+            # Shadow mode (live vs logged-only) — backfill existing signals.
+            _ensure_columns(cur, "signals", {"mode": "TEXT"})
+            cur.execute("UPDATE signals SET mode='live' WHERE mode IS NULL")
             conn.commit()
         print(f"✅ Database ready at {DB_PATH}")
     except sqlite3.Error as exc:
@@ -885,3 +888,60 @@ def set_state(key: str, value: str) -> None:
             conn.commit()
     except sqlite3.Error as exc:
         print(f"⚠️  Failed to set state {key}: {exc}")
+
+
+# --- Signal performance breakdown (dashboard) ---------------------------
+
+def signal_breakdown() -> list[dict[str, Any]]:
+    """Per (strategy, timeframe, mode) signal stats: count, win%, profit factor.
+
+    Pure read from the signals table — wins/losses use outcome_result, the
+    profit factor uses outcome_pct_move. Used by the monitoring dashboard to
+    compare strategy+timeframe combos (live vs shadow) before promoting any.
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT strategy_name, timeframe, "
+                "COALESCE(mode,'live') AS mode, outcome_result, outcome_pct_move "
+                "FROM signals"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        print(f"⚠️  Failed to read signal breakdown: {exc}")
+        return []
+
+    groups: dict[tuple, dict[str, Any]] = {}
+    for r in rows:
+        key = (r["strategy_name"] or "?", r["timeframe"] or "?",
+               r["mode"] or "live")
+        g = groups.setdefault(key, {
+            "strategy_name": key[0], "timeframe": key[1], "mode": key[2],
+            "signals": 0, "wins": 0, "losses": 0,
+            "_gross_win": 0.0, "_gross_loss": 0.0,
+        })
+        g["signals"] += 1
+        res = (r["outcome_result"] or "").upper()
+        move = abs(float(r["outcome_pct_move"] or 0.0))
+        if res == "WIN":
+            g["wins"] += 1
+            g["_gross_win"] += move
+        elif res == "LOSS":
+            g["losses"] += 1
+            g["_gross_loss"] += move
+
+    out: list[dict[str, Any]] = []
+    for g in groups.values():
+        decided = g["wins"] + g["losses"]
+        g["pending"] = g["signals"] - decided
+        g["win_rate"] = round(g["wins"] / decided * 100, 1) if decided else 0.0
+        if g["_gross_loss"] > 0:
+            g["profit_factor"] = round(g["_gross_win"] / g["_gross_loss"], 2)
+        elif g["_gross_win"] > 0:
+            g["profit_factor"] = 999.99
+        else:
+            g["profit_factor"] = 0.0
+        g.pop("_gross_win"); g.pop("_gross_loss")
+        out.append(g)
+    # Live first, then by signal count desc.
+    out.sort(key=lambda x: (x["mode"] != "live", -x["signals"]))
+    return out

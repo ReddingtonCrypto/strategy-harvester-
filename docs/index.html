@@ -39,6 +39,9 @@
   .badge.win { background:rgba(63,185,80,.15); color:var(--win); }
   .badge.loss { background:rgba(248,81,73,.15); color:var(--loss); }
   .badge.pending { background:var(--chip); color:var(--pending); }
+  .badge.live { background:rgba(47,129,247,.18); color:var(--accent); }
+  .badge.shadow { background:var(--chip); color:var(--muted);
+    border:1px solid var(--border); }
   .muted { color:var(--muted); font-size:12px; }
   .chip { display:inline-block; background:var(--chip); border:1px solid var(--border);
     border-radius:6px; padding:3px 8px; margin:3px 3px 0 0; font-size:12px; }
@@ -48,16 +51,16 @@
 </head>
 <body>
   <h1>📡 StrategyHarvester Monitor</h1>
-  <div class="sub">Last scan: <b>2026-06-30 00:02:22</b> UTC ·
-    data source: <b>okx</b> ·
+  <div class="sub">Last scan: <b>2026-06-30 00:35:46</b> UTC ·
+    data source: <b>bybit</b> ·
     auto-refresh 5 min</div>
 
   <div class="grid">
     <div class="card"><div class="label">System</div>
       <div class="value ok">Healthy ✅</div></div>
     <div class="card"><div class="label">Scans (today)</div>
-      <div class="value">1</div>
-      <div class="muted">2 all-time</div></div>
+      <div class="value">2</div>
+      <div class="muted">3 all-time</div></div>
     <div class="card"><div class="label">Signals (today)</div>
       <div class="value">0</div>
       <div class="muted">0 all-time</div></div>
@@ -65,9 +68,9 @@
       <div class="value">50</div></div>
   </div>
 
-  <h2>CRT Live Performance (observation mode)</h2>
+  <h2>CRT Live Performance (4h · observation mode)</h2>
   <div class="grid">
-    <div class="card"><div class="label">Signals</div>
+    <div class="card"><div class="label">Live signals</div>
       <div class="value">0</div>
       <div class="muted">0 pending</div></div>
     <div class="card"><div class="label">Win rate</div>
@@ -78,7 +81,32 @@
       <div class="muted">0 decided</div></div>
   </div>
 
-  <h2>Signal Log</h2>
+  <h2>Performance by Strategy &amp; Timeframe</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Live alerts fire ONLY from CRT 4h. Everything else is shadow (logged, not
+    alerted) — compare here before promoting any combo.</div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Strategy / TF</th><th>Mode</th><th>Signals</th>
+      <th>Win%</th><th>PF</th><th>W/L/Pending</th></tr></thead>
+    <tbody>
+      <tr><td colspan="6" class="muted" style="text-align:center;padding:20px">No signals logged yet.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Live Signal Log (CRT 4h)</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
+      <th>Conf</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No signals recorded yet.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Shadow Signal Log (logged, not alerted)</h2>
   <div class="scroll">
   <table>
     <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
@@ -92,7 +120,7 @@
   <h2>Coins Currently Watched</h2>
   <div><span class="chip">BTC</span><span class="chip">ETH</span><span class="chip">HYPE</span><span class="chip">SOL</span><span class="chip">SLX</span><span class="chip">XRP</span><span class="chip">ARX</span><span class="chip">TAC</span><span class="chip">ENA</span><span class="chip">LINK</span><span class="chip">WLD</span><span class="chip">MNT</span><span class="chip">CAP</span><span class="chip">AAVE</span><span class="chip">AVAX</span><span class="chip">XPL</span><span class="chip">ASTER</span><span class="chip">DOGE</span><span class="chip">XAUT</span><span class="chip">PUMP</span><span class="chip">LTC</span><span class="chip">GRAM</span><span class="chip">LIT</span><span class="chip">INJ</span><span class="chip">IP</span><span class="chip">VIRTUAL</span><span class="chip">SUI</span><span class="chip">NEAR</span><span class="chip">CC</span><span class="chip">ADA</span><span class="chip">BNB</span><span class="chip">ONDO</span><span class="chip">COINX</span><span class="chip">XLM</span><span class="chip">GRASS</span><span class="chip">PEPE</span><span class="chip">VVV</span><span class="chip">BSB</span><span class="chip">BILL</span><span class="chip">TRX</span><span class="chip">H</span><span class="chip">SPCXX</span><span class="chip">WIF</span><span class="chip">BONK</span><span class="chip">MON</span><span class="chip">PENGU</span><span class="chip">SHIB</span><span class="chip">SPX</span><span class="chip">AERO</span><span class="chip">DOT</span></div>
 
-  <footer>Generated 2026-06-30 00:02:22 UTC ·
+  <footer>Generated 2026-06-30 00:36:57 UTC ·
     StrategyHarvester · data pulled from local DB</footer>
 </body>
 </html>

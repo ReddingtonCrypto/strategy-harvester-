@@ -27,7 +27,7 @@ _COLUMNS = [
     "confluence_strategies", "source", "timeframe_alignment", "signal_status",
     "date_generated", "date_expires", "alerted", "alert_sent_at",
     "outcome_1h", "outcome_4h", "outcome_24h", "outcome_result",
-    "outcome_pct_move",
+    "outcome_pct_move", "mode",
 ]
 _JSON_FIELDS = {"confluence_strategies"}
 _BOOL_FIELDS = {"volume_confirmation", "timeframe_alignment", "alerted"}
