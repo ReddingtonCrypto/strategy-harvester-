@@ -91,14 +91,21 @@ def active_exchange_id() -> Optional[str]:
 
 
 def configured_primary() -> str:
-    """The exchange the user configured as primary (default 'bybit')."""
-    return str(load_config().get("data_exchange", "bybit")).lower()
+    """The primary exchange: env DATA_EXCHANGE wins, else config (default bybit).
+
+    The env override lets the cloud (GitHub Actions) use a US-friendly exchange
+    like OKX — where Bybit is also geo-blocked — without touching config.json,
+    so local runs keep using Bybit (matches the mentor's charts).
+    """
+    import os
+    return str(os.environ.get("DATA_EXCHANGE")
+               or load_config().get("data_exchange", "bybit")).lower()
 
 
 def _candidate_exchanges() -> list[str]:
     """Ordered, de-duplicated list of exchanges to try (primary first)."""
     config = load_config()
-    primary = str(config.get("data_exchange", "bybit")).lower()
+    primary = configured_primary()  # honors the DATA_EXCHANGE env override
     fallbacks = config.get("data_exchange_fallbacks", _DEFAULT_FALLBACKS)
     chain = [primary] + [str(x).lower() for x in fallbacks]
     seen: set[str] = set()

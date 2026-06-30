@@ -4,7 +4,7 @@ name: StrategyHarvester Scanner
 # updated SQLite DB back to the repo so state survives between stateless runs.
 on:
   schedule:
-    - cron: "0 * * * *"      # every hour, on the hour (UTC)
+    - cron: "*/30 * * * *"   # every 30 minutes (UTC); public repo = free minutes
   workflow_dispatch: {}        # allow manual "Run workflow" from the Actions tab
 
 # Let the job push the updated DB back to the repo.
@@ -39,6 +39,11 @@ jobs:
 
       - name: Run one scan cycle
         env:
+          # Bybit (like Binance) geo-blocks GitHub's US runners, so use OKX
+          # directly in the cloud — avoids a wasted failed attempt + a repeated
+          # "bybit failed" alert each run. Local runs still default to Bybit.
+          DATA_EXCHANGE:      okx
+          CRON_NEXT_IN:       30m
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
