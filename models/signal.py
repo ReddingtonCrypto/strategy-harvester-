@@ -45,6 +45,12 @@ class Signal(BaseModel):
     entry_price_at_signal: float = 0.0
     confidence_score: int = 0
 
+    # Mechanical exits (SMC signals). When both are set, outcome tracking scores
+    # WIN/LOSS by whichever is hit first — matching the backtest simulator —
+    # instead of a fixed % move threshold. 0.0 → fall back to % thresholds.
+    target_price: float = 0.0
+    stop_price: float = 0.0
+
     market_trend: MarketTrend = "SIDEWAYS"
     trend_strength: TrendStrength = "WEAK"
     volume_confirmation: bool = False

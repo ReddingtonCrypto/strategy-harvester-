@@ -22,7 +22,8 @@ from utils.helpers import load_config, parse_utc, utc_now, utc_now_str
 _COLUMNS = [
     "id", "strategy_id", "strategy_name", "asset", "timeframe", "signal_type",
     "entry_zone_low", "entry_zone_high", "current_price",
-    "entry_price_at_signal", "confidence_score", "market_trend",
+    "entry_price_at_signal", "target_price", "stop_price",
+    "confidence_score", "market_trend",
     "trend_strength", "volume_confirmation", "confluence_count",
     "confluence_strategies", "source", "timeframe_alignment", "signal_status",
     "date_generated", "date_expires", "alerted", "alert_sent_at",
@@ -252,69 +253,121 @@ def get_daily_summary() -> dict[str, Any]:
 # --- Outcome tracking ----------------------------------------------------
 
 def update_signal_outcomes() -> int:
-    """Fill 1H/4H/24H outcomes for maturing signals. Returns count updated.
+    """Score maturing signals. Returns count updated.
 
-    For each signal that still has an unfilled outcome it is now old enough to
-    fill, fetch the asset's current price and compute the % move since the
-    entry price, then classify WIN/LOSS/NEUTRAL by signal direction.
+    Signals with mechanical exits (target_price + stop_price, i.e. SMC) are
+    scored EXACTLY like the backtest: walk the candles since the signal and mark
+    WIN if the target is hit first, LOSS if the stop is hit first (stop checked
+    first = conservative), else close at the last price once the tracking window
+    (`outcome_max_track_hours`, default 24h) elapses. Signals without mechanical
+    exits fall back to the legacy fixed-% threshold method.
     """
     from backtesting import data_fetcher
 
     config = load_config()
     win_th = float(config.get("outcome_win_threshold_pct", 1.0))
     loss_th = float(config.get("outcome_loss_threshold_pct", -1.0))
+    max_track_h = float(config.get("outcome_max_track_hours", 24))
 
-    # Signals that may still need an outcome (any of the three slots empty).
+    # Pending = no final result yet (mechanical) OR a snapshot slot unfilled.
     rows = _query(
-        "SELECT * FROM signals WHERE outcome_1h IS NULL OR outcome_4h IS NULL "
-        "OR outcome_24h IS NULL"
+        "SELECT * FROM signals WHERE outcome_result IS NULL OR outcome_1h IS NULL "
+        "OR outcome_4h IS NULL OR outcome_24h IS NULL"
     )
     if not rows:
         return 0
 
     now = utc_now()
     price_cache: dict[str, Optional[float]] = {}
+    candle_cache: dict[tuple, Any] = {}
     updated = 0
 
     for data in rows:
         sig = Signal.from_dict(data)
         gen = parse_utc(sig.date_generated)
-        if gen is None or not sig.entry_price_at_signal:
+        entry = sig.entry_price_at_signal
+        if gen is None or not entry:
             continue
         age_h = (now - gen).total_seconds() / 3600.0
-
-        # Only bother if at least the 1H mark has passed.
-        if age_h < 1:
+        if age_h < 1:  # nothing matures before the 1H mark
             continue
 
+        # --- Mechanical exits: score by which level is hit first ---------
+        has_levels = (sig.target_price and sig.stop_price
+                      and sig.stop_price < entry < sig.target_price)
+        if has_levels and sig.outcome_result is None:
+            key = (sig.asset, sig.timeframe)
+            if key not in candle_cache:
+                candle_cache[key] = data_fetcher.fetch_latest_ohlcv(
+                    sig.asset, sig.timeframe, limit=300)
+            df = candle_cache[key]
+            result, exit_price = _resolve_by_levels(
+                df, gen, entry, sig.target_price, sig.stop_price,
+                timed_out=age_h >= max_track_h)
+            if result is None:
+                continue  # neither level hit yet, still inside the window
+            pct = (exit_price - entry) / entry * 100.0
+            sig.outcome_1h = sig.outcome_4h = sig.outcome_24h = round(pct, 3)
+            sig.outcome_pct_move = round(pct, 3)
+            sig.outcome_result = result
+            save_signal(sig)
+            updated += 1
+            continue
+
+        # --- Legacy % fallback (signals without mechanical exits) --------
+        if has_levels:  # already resolved above; skip
+            continue
         if sig.asset not in price_cache:
             price_cache[sig.asset] = data_fetcher.get_current_price(sig.asset)
         price = price_cache[sig.asset]
         if price is None:
             continue
-
-        pct_move = (price - sig.entry_price_at_signal) / sig.entry_price_at_signal * 100.0
+        pct_move = (price - entry) / entry * 100.0
         changed = False
-
         if age_h >= 1 and sig.outcome_1h is None:
-            sig.outcome_1h = round(pct_move, 3)
-            changed = True
+            sig.outcome_1h = round(pct_move, 3); changed = True
         if age_h >= 4 and sig.outcome_4h is None:
-            sig.outcome_4h = round(pct_move, 3)
-            changed = True
+            sig.outcome_4h = round(pct_move, 3); changed = True
         if age_h >= 24 and sig.outcome_24h is None:
-            sig.outcome_24h = round(pct_move, 3)
-            changed = True
-
+            sig.outcome_24h = round(pct_move, 3); changed = True
         if changed:
             sig.outcome_pct_move = round(pct_move, 3)
-            sig.outcome_result = _classify(sig.signal_type, pct_move, win_th, loss_th)
+            sig.outcome_result = _classify(sig.signal_type, pct_move,
+                                           win_th, loss_th)
             save_signal(sig)
             updated += 1
 
     if updated:
         print(f"📊 Updated outcomes for {updated} signals")
     return updated
+
+
+def _resolve_by_levels(df, gen, entry: float, target: float, stop: float,
+                       timed_out: bool):
+    """Score a LONG by target/stop on candles after `gen` (backtest parity).
+
+    Returns (result, exit_price): ('WIN', target) / ('LOSS', stop) for the first
+    level hit (stop checked first within a candle = conservative). If neither is
+    hit and the window has elapsed, closes at the last candle ('WIN' if above
+    entry else 'LOSS'). Returns (None, None) while still pending.
+    """
+    if df is None or len(df) == 0:
+        return (None, None)
+    try:
+        after = df[df["timestamp"] > gen]
+    except Exception:
+        return (None, None)
+    if len(after) == 0:
+        return (None, None)
+    for _, c in after.iterrows():
+        if float(c["low"]) <= stop:
+            return ("LOSS", stop)
+        if float(c["high"]) >= target:
+            return ("WIN", target)
+    if timed_out:
+        last_close = float(after.iloc[-1]["close"])
+        return ("WIN" if last_close >= entry else "LOSS", last_close)
+    return (None, None)
 
 
 def _classify(signal_type: str, pct_move: float,

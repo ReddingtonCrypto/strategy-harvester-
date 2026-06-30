@@ -148,6 +148,10 @@ def check_smc_signal(strategy_card: StrategyCard, live_df: pd.DataFrame,
         "entry_zone_low": round(price * (1 - buffer), 8),
         "entry_zone_high": round(price * (1 + buffer), 8),
         "confidence": confidence,
+        # Mechanical exits — let outcome tracking score WIN/LOSS by which is hit
+        # first (same as the backtest), not by an arbitrary % move.
+        "target": float(sig.get("target")) if sig.get("target") else 0.0,
+        "stop": float(sig.get("stop")) if sig.get("stop") else 0.0,
     }
 
 

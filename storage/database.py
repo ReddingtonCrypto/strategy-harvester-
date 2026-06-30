@@ -382,6 +382,9 @@ def init_db() -> None:
             # Shadow mode (live vs logged-only) — backfill existing signals.
             _ensure_columns(cur, "signals", {"mode": "TEXT"})
             cur.execute("UPDATE signals SET mode='live' WHERE mode IS NULL")
+            # Mechanical exits for backtest-parity outcome scoring.
+            _ensure_columns(cur, "signals", {
+                "target_price": "REAL", "stop_price": "REAL"})
             conn.commit()
         print(f"✅ Database ready at {DB_PATH}")
     except sqlite3.Error as exc:
