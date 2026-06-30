@@ -90,6 +90,31 @@ def signal_mode(card, timeframe: str) -> str:
     return "live"
 
 
+def proof_status(card, timeframe: str) -> dict[str, Any]:
+    """Proof banner for a live alert: proven (backtested) vs unproven timeframe.
+
+    A (strategy, timeframe) is 'proven' if the timeframe is in config
+    `<engine_signal>_proven_timeframes` (e.g. crt_proven_timeframes=['4h']).
+    Proven alerts carry the card's real backtest stats; unproven ones carry a
+    loud "observation only" warning. Returns {status, emoji, label}.
+    """
+    config = load_config()
+    sig = (getattr(card, "engine_signal", "") or "").lower()
+    proven_tfs = {str(t).lower()
+                  for t in config.get(f"{sig}_proven_timeframes", [])}
+    if timeframe.lower() in proven_tfs:
+        bt = card.backtest_result if isinstance(card.backtest_result, dict) else {}
+        wr = bt.get("win_rate")
+        pf = bt.get("profit_factor")
+        stat = (f" ({wr}% win, PF {pf})"
+                if wr is not None and pf is not None else "")
+        return {"status": "proven", "emoji": "🟢",
+                "label": f"✅ BACKTESTED EDGE{stat}"}
+    return {"status": "unproven", "emoji": "🟡",
+            "label": ("⚠️ UNPROVEN TIMEFRAME — observation only, not yet "
+                      "backtested. Do not size up on these until validated.")}
+
+
 def run_scan() -> dict[str, Any]:
     """Run one full scan across all strategies/coins/timeframes.
 
@@ -104,7 +129,10 @@ def run_scan() -> dict[str, Any]:
         config.get("default_timeframes", ["15m", "1h", "4h", "1d"]))
     min_conf = float(config.get("min_confidence_to_alert", 60))
     expiry_candles = int(config.get("signal_expiry_candles", 3))
-    max_signals = int(config.get("max_signals_per_scan", 10))
+    # Live-alert budget per scan (anti-spam). Prefer the new key; fall back to
+    # the older max_signals_per_scan for compatibility.
+    max_alerts = int(config.get("max_alerts_per_scan",
+                                config.get("max_signals_per_scan", 10)))
     interval = int(config.get("scan_interval_minutes", 15))
     coin_delay = float(config.get("scan_delay_between_coins_seconds", 0.25))
     observation_ids = set(config.get("observation_mode_strategies", []))
@@ -153,7 +181,9 @@ def run_scan() -> dict[str, Any]:
                     time.sleep(coin_delay)  # respect Binance rate limits
 
     # --- Pass 2: detect signals per (asset, timeframe) -----------------
-    alerts_budget = max_signals
+    # Live alerts are COLLECTED here and sent after the loop so we can rank by
+    # timeframe (higher TFs win the budget) — see the anti-spam block below.
+    live_pending: list[dict] = []
     for asset in assets:
         symbol = _symbol(asset)
         for tf in timeframes:
@@ -272,15 +302,28 @@ def run_scan() -> dict[str, Any]:
                           f"logged (no alert).")
                     continue
 
-                # Live alerts respect the per-scan alert budget (shadow doesn't).
-                if alerts_budget <= 0:
-                    print("🛑 [Scanner] Max LIVE alerts per scan reached "
-                          "(signal still logged).")
-                    continue
+                # Live: queue it; actual sending + budgeting happens after the
+                # loop so higher timeframes can be prioritised.
+                live_pending.append({
+                    "signal": signal, "sentiment": sentiment, "trust": trust,
+                    "regime": regime, "observation": observation,
+                    "proof": proof_status(card, tf), "tf": tf,
+                    "conf": signal.confidence_score,
+                })
 
-                if _send_alert(signal, sentiment, trust, regime, observation):
-                    summary["alerts_sent"] += 1
-                    alerts_budget -= 1
+    # --- Anti-spam: prioritise higher timeframes, cap at the budget -----
+    # Sort by timeframe size DESC (1d/4h before 1h/15m), then confidence DESC,
+    # so when alerts exceed max_alerts_per_scan we keep the most-proven ones.
+    live_pending.sort(key=lambda p: (-timeframe_minutes(p["tf"]), -p["conf"]))
+    for i, p in enumerate(live_pending):
+        if i >= max_alerts:
+            print(f"🛑 [Scanner] Alert budget {max_alerts} reached — "
+                  f"{len(live_pending) - max_alerts} lower-priority live "
+                  f"signal(s) logged but not alerted.")
+            break
+        if _send_alert(p["signal"], p["sentiment"], p["trust"], p["regime"],
+                       p["observation"], p["proof"]):
+            summary["alerts_sent"] += 1
 
     _print_summary(summary)
     return summary
@@ -405,7 +448,8 @@ def _trust_for(strategy_id: str) -> dict[str, Any]:
 def _send_alert(signal: Signal, sentiment: Optional[dict[str, Any]] = None,
                 trust: Optional[dict[str, Any]] = None,
                 regime: Optional[dict[str, Any]] = None,
-                observation: bool = False) -> bool:
+                observation: bool = False,
+                proof: Optional[dict[str, Any]] = None) -> bool:
     """Send the Telegram alert and mark the signal as alerted on success."""
     try:
         from alerts.telegram_alert import send_signal_alert
@@ -414,7 +458,7 @@ def _send_alert(signal: Signal, sentiment: Optional[dict[str, Any]] = None,
         return False
 
     ok = send_signal_alert(signal, sentiment=sentiment, trust=trust,
-                           regime=regime, observation=observation)
+                           regime=regime, observation=observation, proof=proof)
     if ok:
         signal.alerted = True
         signal.alert_sent_at = utc_now_str()

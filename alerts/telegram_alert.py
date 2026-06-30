@@ -147,15 +147,25 @@ def send_signal_alert(signal: Signal | dict[str, Any],
                       sentiment: Optional[dict[str, Any]] = None,
                       trust: Optional[dict[str, Any]] = None,
                       regime: Optional[dict[str, Any]] = None,
-                      observation: bool = False) -> bool:
+                      observation: bool = False,
+                      proof: Optional[dict[str, Any]] = None) -> bool:
     """Format and send a BUY/SELL signal alert (sentiment + trust + regime).
 
     When `observation` is True an OBSERVATION MODE warning is prepended (the
     strategy is live for monitoring only, not validated for trading).
+
+    `proof` (optional) makes the proven-vs-unproven status visually obvious:
+    a proven (backtested) timeframe leads with 🟢 + a BACKTESTED EDGE banner;
+    an unproven timeframe leads with 🟡 + a loud "observation only" warning.
     """
     s = signal if isinstance(signal, Signal) else Signal.from_dict(signal)
 
-    header_emoji = "🟢" if s.signal_type == "BUY" else "🔴"
+    # Header emoji: proof status (🟢 proven / 🟡 unproven) when provided,
+    # else fall back to direction colour.
+    if proof:
+        header_emoji = proof.get("emoji", "🟢")
+    else:
+        header_emoji = "🟢" if s.signal_type == "BUY" else "🔴"
     strength_emoji = {"STRONG": "💪", "MODERATE": "👍", "WEAK": "🤏"}.get(
         s.trend_strength, "")
     volume_line = "✅ Confirmed" if s.volume_confirmation else "❌ Not confirmed"
@@ -166,7 +176,10 @@ def send_signal_alert(signal: Signal | dict[str, Any],
     if sentiment and adj:
         conf_line += f" (adjusted from {s.confidence_score - adj})"
 
-    header = [f"{header_emoji} {s.signal_type} SIGNAL — {s.asset}"]
+    header = [f"{header_emoji} {s.signal_type} SIGNAL — {s.asset} · {s.timeframe}"]
+    # Proof banner first — the single most important line for sizing decisions.
+    if proof and proof.get("label"):
+        header += [proof["label"]]
     if observation:
         header += ["", _OBSERVATION_LABEL]
     lines = header + [
