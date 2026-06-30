@@ -4,7 +4,11 @@ name: StrategyHarvester Scanner
 # updated SQLite DB back to the repo so state survives between stateless runs.
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes (UTC); public repo = free minutes
+    # Every 30 min at :07 and :37 — deliberately OFF the :00/:30 peak, where
+    # GitHub heavily delays/drops scheduled runs. GitHub cron is best-effort
+    # and can still lag; if it proves unreliable, trigger via an external cron
+    # hitting the workflow_dispatch API (see SETUP_GITHUB_ACTIONS.md).
+    - cron: "7,37 * * * *"
   workflow_dispatch: {}        # allow manual "Run workflow" from the Actions tab
 
 # Let the job push the updated DB back to the repo.

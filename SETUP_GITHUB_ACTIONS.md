@@ -126,9 +126,23 @@ Alongside signal alerts, the scanner now sends (all best-effort, never crash):
 
 ### Notes / troubleshooting
 
-- **Schedule lag:** GitHub's cron is best-effort and can run several minutes
-  late, especially on the hour. This is normal — don't tighten the cron to
-  compensate.
+- **Schedule lag / no scheduled runs:** GitHub cron is best-effort. It heavily
+  delays or silently drops scheduled runs at the busy `:00`/`:30` minutes, so
+  the workflow fires at `:07`/`:37` instead. New repos can also take a while to
+  start scheduling. If the Actions tab shows only `workflow_dispatch` runs after
+  a few hours, GitHub simply isn't honoring the cron — use the reliable
+  fallback below.
+- **Reliable trigger (if GitHub cron stays flaky):** drive it from a free
+  external cron such as [cron-job.org](https://cron-job.org). Point it at the
+  dispatch API every 30 min:
+  ```
+  POST https://api.github.com/repos/ReddingtonCrypto/strategy-harvester-/actions/workflows/scanner.yml/dispatches
+  Headers: Authorization: Bearer <a PAT with actions:write>,
+           Accept: application/vnd.github+json
+  Body:    {"ref":"main"}
+  ```
+  That fires the same workflow on a schedule you control, independent of
+  GitHub's cron queue.
 - **Schedules pause on inactive repos:** if there are no commits for ~60 days,
   GitHub disables scheduled workflows. The hourly DB commit keeps the repo
   active, so this won't trigger in practice.
