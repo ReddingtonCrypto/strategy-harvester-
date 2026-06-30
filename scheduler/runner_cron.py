@@ -171,8 +171,9 @@ def run_once() -> int:
     if status == "ok" and telegram_alert.is_configured():
         try:
             telegram_alert.send_scan_heartbeat(
-                len(coins), int(summary.get("signals_found", 0)),
-                data_source, _next_in_label())
+                len(coins), int(summary.get("alerts_sent", 0)),
+                int(summary.get("shadow_logged", 0)), data_source,
+                _next_in_label(), summary.get("logged_signals"))
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️  [Cron] Heartbeat failed: {exc}")
 

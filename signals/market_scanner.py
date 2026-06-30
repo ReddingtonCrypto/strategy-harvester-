@@ -145,6 +145,9 @@ def run_scan() -> dict[str, Any]:
         "signals_found": 0, "alerts_sent": 0, "shadow_logged": 0,
         "skipped_low_conf": 0, "skipped_duplicate": 0,
         "next_scan_minutes": interval,
+        # Every SAVED signal this scan (live + shadow), for monitoring/heartbeat
+        # so the coin name is always visible — not just a raw detection count.
+        "logged_signals": [],
     }
 
     if not strategies:
@@ -295,6 +298,12 @@ def run_scan() -> dict[str, Any]:
 
                 # Persist EVERY signal (shadow + live) — outcomes tracked alike.
                 signal_store.save_signal(signal)
+                summary["logged_signals"].append({
+                    "coin": symbol, "strategy": (card.engine_signal
+                                                 or card.name).upper(),
+                    "tf": tf, "mode": mode, "type": det["signal_type"],
+                    "conf": signal.confidence_score,
+                })
 
                 if mode == "shadow":
                     summary["shadow_logged"] += 1

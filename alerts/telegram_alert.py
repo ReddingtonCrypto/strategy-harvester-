@@ -286,18 +286,31 @@ def send_message(text: str) -> bool:
 
 # --- Agent monitoring messages (scanner observability) -------------------
 
-def send_scan_heartbeat(coins: int, signals: int, data_source: str,
-                        next_in: str) -> bool:
-    """One-line proof-of-life after each scan (toggle: config heartbeat_enabled).
+def send_scan_heartbeat(coins: int, live_alerts: int, shadow_logged: int,
+                        data_source: str, next_in: str,
+                        logged_signals: Optional[list[dict[str, Any]]] = None
+                        ) -> bool:
+    """Proof-of-life after each scan (toggle: config heartbeat_enabled).
 
-    Example: 🔍 Scan done 23:29 UTC · 50 coins · 0 signals · data: bybit · next in 1h
+    Reports what was actually SAVED — live alerts + shadow-logged — not raw
+    detections, and lists each signal WITH its coin name so the dashboard and
+    Telegram always agree.
+
+    Example:
+      🔍 Scan done 14:02 UTC · 50 coins · 0 live · 1 shadow · data: okx · next 30m
+      👻 FRVP WIF/USDT 1h (shadow · BUY)
     """
     if not load_config().get("heartbeat_enabled", True):
         return False
     when = utc_now_str()[11:16]  # HH:MM
-    sig_word = "signal" if signals == 1 else "signals"
-    return _send(f"🔍 Scan done {when} UTC · {coins} coins · "
-                 f"{signals} {sig_word} · data: {data_source} · next in {next_in}")
+    lines = [f"🔍 Scan done {when} UTC · {coins} coins · {live_alerts} live · "
+             f"{shadow_logged} shadow · data: {data_source} · next {next_in}"]
+    for s in (logged_signals or []):
+        emoji = "🟢" if s.get("mode") == "live" else "👻"
+        coin = str(s.get("coin", "")).split("/")[0]
+        lines.append(f"{emoji} {s.get('strategy','?')} {coin} {s.get('tf','')} "
+                     f"({s.get('mode','?')} · {s.get('type','')})")
+    return _send("\n".join(lines))
 
 
 def send_startup_notice(trigger: str = "GitHub Actions") -> bool:
