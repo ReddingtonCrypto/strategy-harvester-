@@ -86,9 +86,15 @@ class Signal(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Signal":
-        """Build a Signal from a plain dict, ignoring unknown keys."""
+        """Build a Signal from a plain dict, ignoring unknown keys.
+
+        None values are dropped so columns added by a later migration (e.g.
+        target_price/stop_price stored NULL on old rows) fall back to their
+        field default instead of failing float validation.
+        """
         allowed = set(cls.model_fields.keys())
-        clean = {k: v for k, v in (data or {}).items() if k in allowed}
+        clean = {k: v for k, v in (data or {}).items()
+                 if k in allowed and v is not None}
         return cls(**clean)
 
     def to_dict(self) -> dict[str, Any]:

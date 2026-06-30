@@ -385,6 +385,10 @@ def init_db() -> None:
             # Mechanical exits for backtest-parity outcome scoring.
             _ensure_columns(cur, "signals", {
                 "target_price": "REAL", "stop_price": "REAL"})
+            cur.execute("UPDATE signals SET target_price=0 "
+                        "WHERE target_price IS NULL")
+            cur.execute("UPDATE signals SET stop_price=0 "
+                        "WHERE stop_price IS NULL")
             conn.commit()
         print(f"✅ Database ready at {DB_PATH}")
     except sqlite3.Error as exc:
