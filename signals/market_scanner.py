@@ -248,11 +248,11 @@ def run_scan() -> dict[str, Any]:
                           f"its historically-best conditions.")
                     continue
 
-                if det["confidence"] < min_conf:
-                    summary["skipped_low_conf"] += 1
-                    print(f"⏭️  [Scanner] {card.name} {symbol} {tf} below "
-                          f"confidence ({det['confidence']} < {min_conf:.0f}).")
-                    continue
+                # NOTE: the min-confidence gate is deliberately NOT applied here.
+                # Shadow signals must log at ALL confidence levels (full
+                # observation data). The gate is applied ONLY on the live-alert
+                # path below, so low-confidence LIVE signals are logged but not
+                # sent to Telegram.
 
                 # --- Confluence: other strategies firing same direction ---
                 agree = [c for c, d in fired
@@ -309,6 +309,16 @@ def run_scan() -> dict[str, Any]:
                     summary["shadow_logged"] += 1
                     print(f"👻 [Scanner] SHADOW {card.name} {symbol} {tf} "
                           f"logged (no alert).")
+                    continue
+
+                # Live-alert confidence gate: below threshold it's LOGGED (done
+                # above) but not sent to Telegram.
+                if signal.confidence_score < min_conf:
+                    summary["skipped_low_conf"] += 1
+                    print(f"🔇 [Scanner] {card.name} {symbol} {tf} logged (live) "
+                          f"but below alert confidence "
+                          f"({signal.confidence_score} < {min_conf:.0f}); "
+                          f"no Telegram.")
                     continue
 
                 # Live: queue it; actual sending + budgeting happens after the
