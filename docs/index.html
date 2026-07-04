@@ -53,7 +53,7 @@
 </head>
 <body>
   <h1>📡 StrategyHarvester Monitor</h1>
-  <div class="sub">Last scan: <b>2026-07-04 19:02:44</b> UTC ·
+  <div class="sub">Last scan: <b>2026-07-04 19:32:37</b> UTC ·
     data source: <b>okx</b> ·
     auto-refresh 5 min</div>
 
@@ -61,11 +61,11 @@
     <div class="card"><div class="label">System</div>
       <div class="value ok">Healthy ✅</div></div>
     <div class="card"><div class="label">Scans (today)</div>
-      <div class="value">42</div>
-      <div class="muted">235 all-time</div></div>
+      <div class="value">43</div>
+      <div class="muted">236 all-time</div></div>
     <div class="card"><div class="label">Signals (today)</div>
-      <div class="value">3</div>
-      <div class="muted">40 all-time</div></div>
+      <div class="value">4</div>
+      <div class="muted">41 all-time</div></div>
     <div class="card"><div class="label">Coins watched</div>
       <div class="value">50</div></div>
   </div>
@@ -73,8 +73,8 @@
   <h2>Scoreboard (all signals)</h2>
   <div class="grid">
     <div class="card"><div class="label">Total signals</div>
-      <div class="value">9</div>
-      <div class="muted">0 pending</div></div>
+      <div class="value">10</div>
+      <div class="muted">1 pending</div></div>
     <div class="card"><div class="label">Wins</div>
       <div class="value ok">4</div></div>
     <div class="card"><div class="label">Losses</div>
@@ -92,7 +92,7 @@
     <thead><tr><th>Strategy</th><th>Signals</th><th>W</th><th>L</th>
       <th>Pend</th><th>Win% / PF</th></tr></thead>
     <tbody>
-      <tr><td><b>FRVP</b></td><td>8</td><td class="win-txt">3</td><td class="loss-txt">5</td><td class="muted">0</td><td><b>37.5%</b> <span class="muted">PF 0.41</span></td></tr>
+      <tr><td><b>FRVP</b></td><td>9</td><td class="win-txt">3</td><td class="loss-txt">5</td><td class="muted">1</td><td><b>37.5%</b> <span class="muted">PF 0.41</span></td></tr>
 <tr><td><b>CRT</b></td><td>1</td><td class="win-txt">1</td><td class="loss-txt">0</td><td class="muted">0</td><td><b>100.0%</b> <span class="muted">PF ∞</span></td></tr>
     </tbody>
   </table>
@@ -105,7 +105,7 @@
       <th>Win%</th><th>PF</th><th>W/L/Pending</th></tr></thead>
     <tbody>
       <tr><td><b>CRT</b> <span class="muted">15m</span></td><td><span class="badge live">LIVE</span></td><td>1</td><td>100.0%</td><td>∞</td><td class="muted">1W/0L/0P</td></tr>
-<tr><td><b>FRVP</b> <span class="muted">15m</span></td><td><span class="badge shadow">shadow</span></td><td>7</td><td>42.9%</td><td>1.34</td><td class="muted">3W/4L/0P</td></tr>
+<tr><td><b>FRVP</b> <span class="muted">15m</span></td><td><span class="badge shadow">shadow</span></td><td>8</td><td>42.9%</td><td>1.34</td><td class="muted">3W/4L/1P</td></tr>
 <tr><td><b>FRVP</b> <span class="muted">1h</span></td><td><span class="badge shadow">shadow</span></td><td>1</td><td>0.0%</td><td>0.00</td><td class="muted">0W/1L/0P</td></tr>
     </tbody>
   </table>
@@ -113,14 +113,15 @@
 
   <h2>Full Signal Log (live + shadow)</h2>
   <div class="muted" style="margin:-4px 0 8px">
-    9 signals · newest first · every signal that fires, alerted or
+    10 signals · newest first · every signal that fires, alerted or
     not.</div>
   <div class="scroll">
   <table>
     <thead><tr><th>Date (UTC)</th><th>Coin</th><th>Strategy</th><th>TF</th>
       <th>Mode</th><th>Conf</th><th>Outcome</th></tr></thead>
     <tbody>
-      <tr><td>2026-07-04 13:32</td><td><b>INJ</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>90</td><td><span class="badge loss">L</span> <span class="muted">-0.89%</span></td></tr>
+      <tr><td>2026-07-04 19:32</td><td><b>XPL</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>70</td><td><span class="badge pending">pending</span> <span class="muted"></span></td></tr>
+<tr><td>2026-07-04 13:32</td><td><b>INJ</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>90</td><td><span class="badge loss">L</span> <span class="muted">-0.89%</span></td></tr>
 <tr><td>2026-07-04 03:32</td><td><b>LTC</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>80</td><td><span class="badge loss">L</span> <span class="muted">-0.47%</span></td></tr>
 <tr><td>2026-07-02 19:02</td><td><b>WIF</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>70</td><td><span class="badge loss">L</span> <span class="muted">-0.91%</span></td></tr>
 <tr><td>2026-07-02 17:02</td><td><b>BONK</b></td><td>FRVP</td><td>15m</td><td><span class="badge shadow">shadow</span></td><td>70</td><td><span class="badge win">W</span> <span class="muted">+1.55%</span></td></tr>
@@ -136,7 +137,7 @@
   <h2>Coins Currently Watched</h2>
   <div><span class="chip">BTC</span><span class="chip">ETH</span><span class="chip">HYPE</span><span class="chip">SOL</span><span class="chip">SLX</span><span class="chip">XRP</span><span class="chip">ARX</span><span class="chip">TAC</span><span class="chip">ENA</span><span class="chip">LINK</span><span class="chip">WLD</span><span class="chip">MNT</span><span class="chip">CAP</span><span class="chip">AAVE</span><span class="chip">AVAX</span><span class="chip">XPL</span><span class="chip">ASTER</span><span class="chip">DOGE</span><span class="chip">XAUT</span><span class="chip">PUMP</span><span class="chip">LTC</span><span class="chip">GRAM</span><span class="chip">LIT</span><span class="chip">INJ</span><span class="chip">IP</span><span class="chip">VIRTUAL</span><span class="chip">SUI</span><span class="chip">NEAR</span><span class="chip">CC</span><span class="chip">ADA</span><span class="chip">BNB</span><span class="chip">ONDO</span><span class="chip">COINX</span><span class="chip">XLM</span><span class="chip">GRASS</span><span class="chip">PEPE</span><span class="chip">VVV</span><span class="chip">BSB</span><span class="chip">BILL</span><span class="chip">TRX</span><span class="chip">H</span><span class="chip">SPCXX</span><span class="chip">WIF</span><span class="chip">BONK</span><span class="chip">MON</span><span class="chip">PENGU</span><span class="chip">SHIB</span><span class="chip">SPX</span><span class="chip">AERO</span><span class="chip">DOT</span></div>
 
-  <footer>Generated 2026-07-04 19:02:45 UTC ·
+  <footer>Generated 2026-07-04 19:32:38 UTC ·
     StrategyHarvester · data pulled from local DB</footer>
 </body>
 </html>
