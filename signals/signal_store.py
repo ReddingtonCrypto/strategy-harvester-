@@ -354,8 +354,13 @@ def _resolve_by_levels(df, gen, entry: float, target: float, stop: float,
     if df is None or len(df) == 0:
         return (None, None)
     try:
-        after = df[df["timestamp"] > gen]
-    except Exception:
+        # Candle timestamps are tz-NAIVE UTC (pd.to_datetime(unit='ms')), while
+        # parse_utc returns an AWARE datetime — comparing them raises TypeError
+        # (which used to leave every signal pending forever). Strip tzinfo.
+        gen_naive = gen.replace(tzinfo=None) if gen.tzinfo else gen
+        after = df[df["timestamp"] > gen_naive]
+    except Exception as exc:
+        print(f"⚠️  [Outcomes] candle comparison failed: {exc}")
         return (None, None)
     if len(after) == 0:
         return (None, None)
