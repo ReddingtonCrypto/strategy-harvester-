@@ -77,6 +77,20 @@ def _performance(signals: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _per_strategy(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Scoreboard rows aggregated per strategy (across all timeframes/modes)."""
+    groups: dict[str, list] = {}
+    for s in signals:
+        groups.setdefault(_short_name(s.get("strategy_name", "?")), []).append(s)
+    out = []
+    for name, sigs in groups.items():
+        perf = _performance(sigs)
+        perf["strategy"] = name
+        out.append(perf)
+    out.sort(key=lambda p: -p["total"])
+    return out
+
+
 def build_stats() -> dict[str, Any]:
     """Aggregate all dashboard data from the DB + config."""
     scan = db.get_scan_run_stats()
@@ -93,11 +107,13 @@ def build_stats() -> dict[str, Any]:
     return {
         "generated_at": utc_now_str(),
         "scan": scan,
-        "signals": signals,
+        "signals": signals,                               # full log (live+shadow)
         "live_signals": live_signals,
         "shadow_signals": shadow_signals,
-        "performance": _performance(live_signals),       # headline = live only
+        "overall": _performance(signals),                 # scoreboard = ALL
+        "live_performance": _performance(live_signals),
         "shadow_performance": _performance(shadow_signals),
+        "per_strategy": _per_strategy(signals),
         "breakdown": breakdown,
         "coins": coins,
         "healthy": healthy,
@@ -120,26 +136,53 @@ def _outcome_badge(result: Any) -> str:
     return f'<span class="badge {cls}">{label}</span>'
 
 
+def _mode_badge(mode: Any) -> str:
+    live = (mode or "live") != "shadow"
+    return (f'<span class="badge {"live" if live else "shadow"}">'
+            f'{"LIVE" if live else "shadow"}</span>')
+
+
 def _signal_rows_html(signals: list[dict[str, Any]]) -> str:
+    """The full signal log: date, coin, strategy, tf, mode, conf, outcome+%."""
     if not signals:
-        return ('<tr><td colspan="6" class="muted" '
+        return ('<tr><td colspan="7" class="muted" '
                 'style="text-align:center;padding:24px">'
                 'No signals recorded yet.</td></tr>')
     out = []
-    for s in signals[:200]:  # cap rendered rows
+    for s in signals[:300]:  # cap rendered rows
         when = _esc(str(s.get("date_generated", ""))[:16])
         coin = _esc(str(s.get("asset", "")).split("/")[0])
+        strat = _esc(_short_name(s.get("strategy_name", "?")))
         tf = _esc(s.get("timeframe", ""))
-        entry = s.get("entry_price_at_signal")
-        entry_str = f"{float(entry):,.4f}".rstrip("0").rstrip(".") if entry else "—"
         conf = _esc(s.get("confidence_score", "—"))
         move = s.get("outcome_pct_move")
         move_str = f"{float(move):+.2f}%" if move is not None else ""
         out.append(
-            f"<tr><td>{when}</td><td><b>{coin}</b></td><td>{tf}</td>"
-            f"<td>{entry_str}</td><td>{conf}</td>"
+            f"<tr><td>{when}</td><td><b>{coin}</b></td><td>{strat}</td>"
+            f"<td>{tf}</td><td>{_mode_badge(s.get('mode'))}</td><td>{conf}</td>"
             f"<td>{_outcome_badge(s.get('outcome_result'))} "
             f'<span class="muted">{move_str}</span></td></tr>')
+    return "\n".join(out)
+
+
+def _scoreboard_html(per_strategy: list[dict[str, Any]]) -> str:
+    """Per-strategy running scoreboard rows."""
+    if not per_strategy:
+        return ('<tr><td colspan="6" class="muted" '
+                'style="text-align:center;padding:20px">'
+                'No signals yet.</td></tr>')
+    out = []
+    for p in per_strategy:
+        pf = p["profit_factor"]
+        pf_str = "∞" if pf >= 999 else f"{pf:.2f}"
+        out.append(
+            f"<tr><td><b>{_esc(p['strategy'])}</b></td>"
+            f"<td>{p['total']}</td>"
+            f'<td class="win-txt">{p["wins"]}</td>'
+            f'<td class="loss-txt">{p["losses"]}</td>'
+            f'<td class="muted">{p["pending"]}</td>'
+            f"<td><b>{p['win_rate']}%</b> "
+            f'<span class="muted">PF {pf_str}</span></td></tr>')
     return "\n".join(out)
 
 
@@ -177,12 +220,12 @@ def _coins_html(coins: list[str]) -> str:
 def render(stats: dict[str, Any]) -> str:
     """Render the full HTML page from aggregated stats."""
     scan = stats["scan"]
-    perf = stats["performance"]
+    ov = stats["overall"]          # scoreboard across ALL signals
+    livep = stats["live_performance"]
     last_scan = scan.get("last_scan_at") or "never"
     health_txt = "Healthy ✅" if stats["healthy"] else "Degraded ⚠️"
     health_cls = "ok" if stats["healthy"] else "bad"
-    pf = perf["profit_factor"]
-    pf_str = "∞" if pf >= 999 else f"{pf:.2f}"
+    ov_pf = "∞" if ov["profit_factor"] >= 999 else f"{ov['profit_factor']:.2f}"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -229,6 +272,8 @@ def render(stats: dict[str, Any]) -> str:
   .badge.shadow {{ background:var(--chip); color:var(--muted);
     border:1px solid var(--border); }}
   .muted {{ color:var(--muted); font-size:12px; }}
+  .win-txt {{ color:var(--win); font-weight:700; }}
+  .loss-txt {{ color:var(--loss); font-weight:700; }}
   .chip {{ display:inline-block; background:var(--chip); border:1px solid var(--border);
     border-radius:6px; padding:3px 8px; margin:3px 3px 0 0; font-size:12px; }}
   .scroll {{ overflow-x:auto; }}
@@ -254,23 +299,34 @@ def render(stats: dict[str, Any]) -> str:
       <div class="value">{len(stats['coins'])}</div></div>
   </div>
 
-  <h2>CRT Live Performance (4h · observation mode)</h2>
+  <h2>Scoreboard (all signals)</h2>
   <div class="grid">
-    <div class="card"><div class="label">Live signals</div>
-      <div class="value">{perf['total']}</div>
-      <div class="muted">{perf['pending']} pending</div></div>
+    <div class="card"><div class="label">Total signals</div>
+      <div class="value">{ov['total']}</div>
+      <div class="muted">{ov['pending']} pending</div></div>
+    <div class="card"><div class="label">Wins</div>
+      <div class="value ok">{ov['wins']}</div></div>
+    <div class="card"><div class="label">Losses</div>
+      <div class="value bad">{ov['losses']}</div></div>
     <div class="card"><div class="label">Win rate</div>
-      <div class="value">{perf['win_rate']}%</div>
-      <div class="muted">{perf['wins']}W / {perf['losses']}L</div></div>
-    <div class="card"><div class="label">Profit factor</div>
-      <div class="value">{pf_str}</div>
-      <div class="muted">{perf['decided']} decided</div></div>
+      <div class="value">{ov['win_rate']}%</div>
+      <div class="muted">PF {ov_pf} · {ov['decided']} decided</div></div>
+  </div>
+  <div class="muted" style="margin:-6px 0 8px">
+    Live Telegram alerts fire from <b>CRT</b> (all timeframes; 🟢 4h proven,
+    🟡 others unproven). FRVP/Range/Textbook/CISD are <b>shadow</b> — logged
+    here, never alerted.</div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Strategy</th><th>Signals</th><th>W</th><th>L</th>
+      <th>Pend</th><th>Win% / PF</th></tr></thead>
+    <tbody>
+      {_scoreboard_html(stats['per_strategy'])}
+    </tbody>
+  </table>
   </div>
 
   <h2>Performance by Strategy &amp; Timeframe</h2>
-  <div class="muted" style="margin:-4px 0 8px">
-    Live alerts fire ONLY from CRT 4h. Everything else is shadow (logged, not
-    alerted) — compare here before promoting any combo.</div>
   <div class="scroll">
   <table>
     <thead><tr><th>Strategy / TF</th><th>Mode</th><th>Signals</th>
@@ -281,24 +337,16 @@ def render(stats: dict[str, Any]) -> str:
   </table>
   </div>
 
-  <h2>Live Signal Log (CRT 4h)</h2>
+  <h2>Full Signal Log (live + shadow)</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    {ov['total']} signals · newest first · every signal that fires, alerted or
+    not.</div>
   <div class="scroll">
   <table>
-    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
-      <th>Conf</th><th>Outcome</th></tr></thead>
+    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>Strategy</th><th>TF</th>
+      <th>Mode</th><th>Conf</th><th>Outcome</th></tr></thead>
     <tbody>
-      {_signal_rows_html(stats['live_signals'])}
-    </tbody>
-  </table>
-  </div>
-
-  <h2>Shadow Signal Log (logged, not alerted)</h2>
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>TF</th><th>Entry</th>
-      <th>Conf</th><th>Outcome</th></tr></thead>
-    <tbody>
-      {_signal_rows_html(stats['shadow_signals'])}
+      {_signal_rows_html(stats['signals'])}
     </tbody>
   </table>
   </div>
@@ -319,6 +367,7 @@ def generate(out_path: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render(stats), encoding="utf-8")
     print(f"📊 [Dashboard] Wrote {target} "
-          f"({stats['performance']['total']} signals, "
+          f"({stats['overall']['total']} signals, "
+          f"{stats['overall']['wins']}W/{stats['overall']['losses']}L, "
           f"{stats['scan'].get('scans_total',0)} scans).")
     return target
