@@ -6,13 +6,19 @@ backtests don't re-hit the API. Public spot OHLCV needs no API key.
 
 Exchange selection
 ------------------
-The data source is config-driven (`data_exchange`, default "bybit"). Binance.com
-geo-blocks US servers (HTTP 451), which breaks the cloud/GitHub-Actions scanner,
-so we default to **Bybit** (no key needed, works from US, matches the mentor's
-charts). If the primary exchange is geo-blocked or unreachable, we fall through
-a configurable chain (`data_exchange_fallbacks`: bybit → okx → kucoin → kraken)
-and use the first one that actually returns data. Set `data_exchange` to
-"binance" to force the original path when running locally where Binance works.
+The data source is config-driven (`data_exchange`, default "binance"). We trade
+on **binance.com (global)**, so we want signals/backtests measured against that
+same venue. The catch: binance.com's main API (api.binance.com) returns HTTP 451
+from US IPs (GitHub Actions runners) and some regions. Fix (proven in the
+sibling `crypto-agent` project, 2026-07-07): Binance's PUBLIC market-data host
+`data-api.binance.vision` serves the same global spot data — real prices/wicks,
+real global volume, the full pair list — and IS reachable from US IPs, so both
+local runs and the cloud scanner see identical binance.com data. `_make_client()`
+patches `urls["api"]["public"]` to that host for `name == "binance"`.
+
+If binance is geo-blocked or unreachable anyway, we fall through a configurable
+chain (`data_exchange_fallbacks`: bybit → okx → kucoin → kraken) and use the
+first one that actually returns data.
 
 All exchanges are used in **spot** mode with CCXT's unified BTC/USDT symbols, so
 the top-50 picker and the candle fetcher always agree on what's fetchable.
@@ -44,12 +50,17 @@ _TF_MS = {
 
 
 def _cache_path(symbol: str, timeframe: str) -> Path:
-    """Return the CSV cache path for a symbol/timeframe combination."""
+    """Return the CSV cache path for a symbol/timeframe/exchange combination.
+
+    Tagged with the configured primary exchange so switching data sources
+    (e.g. bybit -> binance) can never silently serve stale candles from the
+    old venue under the same filename — each source gets its own cache file.
+    """
     config = load_config()
     folder = PROJECT_ROOT / config.get("data_cache_folder", "data/cache")
     folder.mkdir(parents=True, exist_ok=True)
     safe_symbol = symbol.replace("/", "_").replace(":", "_")
-    return folder / f"{safe_symbol}_{timeframe}.csv"
+    return folder / f"{safe_symbol}_{timeframe}_{configured_primary()}.csv"
 
 
 # Cached CCXT client — built once and reused so each call doesn't re-run the
@@ -58,13 +69,17 @@ def _cache_path(symbol: str, timeframe: str) -> Path:
 _EXCHANGE = None
 _EXCHANGE_NAME = None
 
-# Default fallback order if config doesn't specify one. Binance is intentionally
-# NOT here — it geo-blocks US/cloud servers (451). Add it via config to use it.
+# Fallback order if binance (primary) is unreachable. These are only used as a
+# backup — binance.com via the vision host (see _make_client) is preferred so
+# signals/backtests match the venue we actually trade on.
 _DEFAULT_FALLBACKS = ["bybit", "okx", "kucoin", "kraken"]
 
 # Alternate (mirror) hostnames to try when an exchange's primary domain is
 # unreachable. Bybit's api.bybit.com is DNS-blocked on some ISPs/regions; its
 # official api.bytick.com mirror serves the same data and resolves everywhere.
+# Binance's public-data mirror (data-api.binance.vision) is handled separately
+# in _make_client() since it only swaps the "public" URL bucket, not the whole
+# client (private/sapi endpoints stay on api.binance.com, unused here anyway).
 _MIRROR_HOSTNAMES = {"bybit": ["bytick.com"]}
 
 
@@ -91,15 +106,15 @@ def active_exchange_id() -> Optional[str]:
 
 
 def configured_primary() -> str:
-    """The primary exchange: env DATA_EXCHANGE wins, else config (default bybit).
+    """The primary exchange: env DATA_EXCHANGE wins, else config (default binance).
 
-    The env override lets the cloud (GitHub Actions) use a US-friendly exchange
-    like OKX — where Bybit is also geo-blocked — without touching config.json,
-    so local runs keep using Bybit (matches the mentor's charts).
+    The env override lets the cloud (GitHub Actions) force a different exchange
+    without touching config.json, e.g. if the binance.com vision host ever has
+    an outage — fall back to OKX/Bybit there while local keeps using binance.
     """
     import os
     return str(os.environ.get("DATA_EXCHANGE")
-               or load_config().get("data_exchange", "bybit")).lower()
+               or load_config().get("data_exchange", "binance")).lower()
 
 
 def _candidate_exchanges() -> list[str]:
@@ -140,7 +155,14 @@ def _make_client(name: str, hostname: Optional[str] = None):
         if api_key and api_secret:
             params["apiKey"] = api_key
             params["secret"] = api_secret
-    return getattr(ccxt, name)(params)
+    client = getattr(ccxt, name)(params)
+    if name == "binance" and hostname is None:
+        # Route public market-data (klines/exchangeInfo/tickers) through
+        # binance's US-reachable vision mirror — api.binance.com itself 451s
+        # from US/cloud IPs. Only the "public" bucket is repointed; we never
+        # use private/sapi endpoints (read-only OHLCV only, never trades).
+        client.urls["api"]["public"] = "https://data-api.binance.vision/api/v3"
+    return client
 
 
 def _host_attempts(name: str) -> list[Optional[str]]:

@@ -43,10 +43,14 @@ jobs:
 
       - name: Run one scan cycle
         env:
-          # Bybit (like Binance) geo-blocks GitHub's US runners, so use OKX
-          # directly in the cloud — avoids a wasted failed attempt + a repeated
-          # "bybit failed" alert each run. Local runs still default to Bybit.
-          DATA_EXCHANGE:      okx
+          # We trade on binance.com (global); data_fetcher routes binance's
+          # public OHLCV through the vision mirror (data-api.binance.vision),
+          # which — unlike api.binance.com and api.bybit.com — IS reachable
+          # from GitHub's US runners, so the cloud scanner can see real
+          # binance.com data too. If it's ever unreachable, the built-in
+          # fallback chain (bybit -> okx -> kucoin -> kraken) takes over
+          # automatically, so this is safe to leave set.
+          DATA_EXCHANGE:      binance
           CRON_NEXT_IN:       30m
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
