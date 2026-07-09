@@ -145,6 +145,15 @@ def _make_client(name: str, hostname: Optional[str] = None):
         "enableRateLimit": True,        # CCXT auto-throttles to avoid bans.
         "options": {"defaultType": "spot"},  # spot candles only — no perps.
     }
+    if name == "binance":
+        # ccxt.binance's load_markets() unconditionally probes spot AND
+        # linear/inverse FUTURES exchangeInfo (fapi/dapi.binance.com) to
+        # build its unified market map — `defaultType: spot` doesn't stop
+        # this. Futures is 451-blocked on GitHub's runners even though spot
+        # (via the vision host below) isn't, so an unrestricted load_markets()
+        # throws there and we silently fall through to OKX. Restrict to spot
+        # only — we never trade futures here anyway.
+        params["options"]["fetchMarkets"] = ["spot"]
     if hostname:
         params["hostname"] = hostname   # CCXT rebuilds api URLs from {hostname}.
     # API keys only help on Binance (higher rate limits); other exchanges need
