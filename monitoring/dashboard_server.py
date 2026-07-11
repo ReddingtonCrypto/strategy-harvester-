@@ -21,6 +21,7 @@ Run with:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import html
@@ -29,9 +30,9 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -413,14 +414,48 @@ def _dashboard_page(msg: str = "") -> str:
   <h2>Coins Currently Watched</h2>
   <div>{static_dashboard._coins_html(stats['coins'])}</div>
 
-  <h2>Process one YouTube video right now</h2>
+  <h2>Paste a YouTube transcript</h2>
   <div class="muted" style="margin:-4px 0 8px">
-    For a single video you found (not an ongoing channel) — extracts
-    immediately, waits for the result, does NOT add anything to the
-    watchlist below.</div>
-  <form class="add-form" method="post" action="/process-video">
-    <input type="text" name="video_url" placeholder="https://youtube.com/watch?v=..."
-      style="flex:2" required>
+    Automatic fetching (transcript API + audio download) is blocked from
+    this VM's IP range by YouTube (confirmed — not fixable by changing the
+    IP, it's Oracle's whole cloud range, not this one address). Workaround:
+    open the video yourself, click "···" under the player → <b>Show
+    transcript</b>, select all, copy, and paste it here instead — this
+    never touches YouTube from the server at all.</div>
+  <form class="add-form" method="post" action="/process-transcript" style="flex-direction:column">
+    <input type="text" name="video_url" placeholder="Video URL (optional, for reference)"
+      style="width:100%;margin-bottom:8px">
+    <textarea name="transcript_text" placeholder="Paste the transcript text here..."
+      style="width:100%;min-height:120px;background:#0d1117;color:var(--txt);
+      border:1px solid var(--border);border-radius:6px;padding:8px 10px;
+      margin-bottom:8px" required></textarea>
+    <button type="submit">Extract now</button>
+  </form>
+
+  <h2>Paste text or notes</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Any free-form text — an article, a post, your own notes — extracted the
+    same way as everything else.</div>
+  <form class="add-form" method="post" action="/process-text" style="flex-direction:column">
+    <input type="text" name="label" placeholder="Label (optional, e.g. a source name)"
+      style="width:100%;margin-bottom:8px">
+    <textarea name="content" placeholder="Paste text here..."
+      style="width:100%;min-height:120px;background:#0d1117;color:var(--txt);
+      border:1px solid var(--border);border-radius:6px;padding:8px 10px;
+      margin-bottom:8px" required></textarea>
+    <button type="submit">Extract now</button>
+  </form>
+
+  <h2>Upload an image (chart or post screenshot)</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Sent to Claude vision for reading — works the same as menu option 17
+    locally, just from the browser.</div>
+  <form class="add-form" method="post" action="/process-image"
+    enctype="multipart/form-data" style="flex-direction:column">
+    <input type="file" name="image_file" accept="image/png,image/jpeg,image/webp,image/gif"
+      style="width:100%;margin-bottom:8px" required>
+    <input type="text" name="notes" placeholder="Notes about the image (optional)"
+      style="width:100%;margin-bottom:8px">
     <button type="submit">Extract now</button>
   </form>
 
@@ -512,35 +547,103 @@ def index(request: Request, msg: str = ""):
     return _dashboard_page(msg)
 
 
-@app.post("/process-video")
-def process_video_route(request: Request, video_url: str = Form(...)):
-    if not _is_authed(request):
-        return RedirectResponse("/login", status_code=303)
+def _extract_and_save(text: str, *, source_type: str, source_url: str,
+                      extraction_mode: Optional[str]) -> tuple[bool, str]:
+    """Shared extract+save+message logic for the paste-based routes below.
 
-    from ingestion.base_reader import IngestionError
-    from ingestion.youtube_reader import YouTubeReader
+    Returns (found, redirect_message) — message already has the "kind:"
+    prefix _flash_html() expects.
+    """
     from extraction.strategy_extractor import extract_strategy
     from storage import strategy_store
-    from utils.helpers import load_config
 
-    url = video_url.strip()
-    extraction_mode = load_config().get("extraction_mode")
-    try:
-        text = YouTubeReader().read(url)
-    except IngestionError as exc:
-        return RedirectResponse(f"/?msg=error:{quote(str(exc))}", status_code=303)
-    except Exception as exc:  # noqa: BLE001 — never 500 the whole dashboard
-        return RedirectResponse(f"/?msg=error:{quote(str(exc))}", status_code=303)
-
-    card = extract_strategy(text, source_type="youtube", source_url=url,
+    card = extract_strategy(text, source_type=source_type, source_url=source_url,
                             force_mode=extraction_mode)
     if card and card.confidence_score > 0:
         strategy_store.save_card(card)
+        return True, "success:" + quote("Strategy extracted: " + card.name)
+    return False, "info:" + quote("No strategy found (or confidence was 0).")
+
+
+@app.post("/process-transcript")
+def process_transcript_route(request: Request, transcript_text: str = Form(...),
+                             video_url: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    from utils.helpers import clean_text, load_config
+
+    text = clean_text(transcript_text)
+    if not text:
+        return RedirectResponse(
+            f"/?msg=error:{quote('No transcript text provided.')}", status_code=303)
+
+    extraction_mode = load_config().get("extraction_mode")
+    _found, msg = _extract_and_save(
+        text, source_type="youtube", source_url=video_url.strip() or "manual-paste",
+        extraction_mode=extraction_mode)
+    return RedirectResponse(f"/?msg={msg}", status_code=303)
+
+
+@app.post("/process-text")
+def process_text_route(request: Request, content: str = Form(...), label: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    from utils.helpers import clean_text, load_config
+
+    text = clean_text(content)
+    if not text:
+        return RedirectResponse(
+            f"/?msg=error:{quote('No text provided.')}", status_code=303)
+
+    extraction_mode = load_config().get("extraction_mode")
+    _found, msg = _extract_and_save(
+        text, source_type="manual", source_url=label.strip() or "dashboard_paste",
+        extraction_mode=extraction_mode)
+    return RedirectResponse(f"/?msg={msg}", status_code=303)
+
+
+@app.post("/process-image")
+async def process_image_route(request: Request, image_file: UploadFile = File(...),
+                              notes: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    from ingestion import image_reader
+
+    data = await image_file.read()
+    max_mb = 5.0
+    try:
+        from utils.helpers import load_config
+
+        max_mb = float(load_config().get("image_max_size_mb", 5))
+    except Exception:  # noqa: BLE001 — fall back to the default above
+        pass
+    if len(data) / (1024 * 1024) > max_mb:
+        return RedirectResponse(
+            f"/?msg=error:{quote(f'Image is over the {max_mb:.0f}MB limit.')}",
+            status_code=303)
+
+    ext = (image_file.filename or "").rsplit(".", 1)[-1].lower()
+    media_type = image_reader._MEDIA_TYPES.get(ext, image_file.content_type or "image/png")
+    b64 = base64.b64encode(data).decode("ascii")
+
+    image_data = {
+        "image_base64": b64, "media_type": media_type,
+        "text_notes": notes.strip(), "source_type": "image_input",
+        "source_label": f"image: {image_file.filename or 'upload'}",
+    }
+    parsed = image_reader.extract_from_image(image_data)
+    if not parsed:
+        return RedirectResponse(
+            f"/?msg=error:{quote('Claude could not read the image.')}", status_code=303)
+    card = image_reader.build_and_save_card(parsed, image_data)
+    if card:
         success_text = "Strategy extracted: " + card.name
         return RedirectResponse(f"/?msg=success:{quote(success_text)}", status_code=303)
     return RedirectResponse(
-        f"/?msg=info:{quote('No strategy found in that video (or confidence was 0).')}",
-        status_code=303)
+        f"/?msg=info:{quote('No clear strategy found in that image.')}", status_code=303)
 
 
 @app.post("/process-telegram-message")

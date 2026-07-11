@@ -17,9 +17,7 @@ from typing import Any, Optional
 from ingestion.base_reader import IngestionError
 from models.strategy_card import StrategyCard
 from storage import strategy_store
-from utils.helpers import extract_json, get_env, load_config
-
-_MODEL = "claude-opus-4-8"
+from utils.helpers import extract_json, load_config
 
 # Extension → Claude media type.
 _MEDIA_TYPES = {
@@ -140,36 +138,68 @@ def _encode_image(path: Path) -> tuple[str, str]:
 # --- Claude vision -------------------------------------------------------
 
 def _call_vision(b64: str, media_type: str, prompt: str) -> Optional[str]:
-    """Send an image + prompt to Claude Opus 4.8 (one retry). Returns text/None."""
-    api_key = get_env("CLAUDE_API_KEY")
-    if not api_key:
-        print("❌ [Image] CLAUDE_API_KEY not set — image reading needs the "
-              "Claude API. Add it to .env to use this feature.")
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        print("❌ [Image] 'anthropic' not installed.")
+    """Send an image + prompt to the local `claude` CLI (subscription mode, free).
+
+    Writes the image to a temp file and asks the CLI to Read it, rather than
+    using CLAUDE_API_KEY, so image extraction stays free like every other
+    ingestion path (see extraction/strategy_extractor.py's SUBSCRIPTION mode
+    for the same envelope-parsing pattern). CLAUDE_API_KEY / ANTHROPIC_API_KEY
+    are stripped from the subprocess env so this can never fall back to a
+    billed key by accident.
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    import time as _time
+
+    from extraction.strategy_extractor import _SUBSCRIPTION_MODEL
+
+    if shutil.which("claude") is None:
+        print("❌ [Image] 'claude' CLI not found on PATH — cannot use "
+              "subscription mode. Install Claude Code to use this feature.")
         return None
 
-    content = [
-        {"type": "image",
-         "source": {"type": "base64", "media_type": media_type, "data": b64}},
-        {"type": "text", "text": prompt},
-    ]
-    for attempt in (1, 2):
-        try:
-            print(f"🤖 [Image] Sending image + notes to Claude (attempt {attempt})...")
-            client = anthropic.Anthropic(api_key=api_key)
-            msg = client.messages.create(
-                model=_MODEL, max_tokens=1500,
-                messages=[{"role": "user", "content": content}],
-            )
-            return "".join(b.text for b in msg.content
-                           if getattr(b, "type", None) == "text")
-        except Exception as exc:
-            print(f"❌ [Image] Claude vision error: {exc}")
-    return None
+    ext = media_type.split("/")[-1].replace("jpeg", "jpg")
+    tmp_dir = Path(tempfile.gettempdir()) / "strategy_harvester_images"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"upload_{int(_time.time() * 1000)}.{ext}"
+    tmp_path.write_bytes(base64.b64decode(b64))
+
+    cli_prompt = f"Read the image at {tmp_path} then: {prompt}"
+    env = dict(os.environ)
+    env.pop("CLAUDE_API_KEY", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    cmd = ["claude", "-p", cli_prompt, "--output-format", "json",
+           "--model", _SUBSCRIPTION_MODEL, "--allowedTools", "Read"]
+    try:
+        print("🔑 [Image] Calling local Claude CLI (subscription mode)...")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120, env=env, check=False)
+    except subprocess.TimeoutExpired:
+        print("❌ [Image] Claude CLI call timed out after 120s.")
+        return None
+    except OSError as exc:
+        print(f"❌ [Image] Could not run the Claude CLI: {exc}")
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    try:
+        envelope = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"❌ [Image] Claude CLI exited {result.returncode} with "
+              f"non-JSON output: {(result.stderr or result.stdout).strip()[:500]}")
+        return None
+
+    if isinstance(envelope, dict) and envelope.get("is_error"):
+        print(f"❌ [Image] Claude CLI reported an error: "
+              f"{envelope.get('result', '(no message)')}")
+        return None
+
+    return envelope.get("result", "") if isinstance(envelope, dict) else ""
 
 
 def detect_image_type(image_path: str) -> str:
