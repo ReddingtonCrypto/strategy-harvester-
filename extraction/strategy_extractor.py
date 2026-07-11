@@ -257,19 +257,27 @@ def _extract_subscription(raw_text: str) -> Optional[dict]:
         print(f"❌ [Extractor] Could not run the Claude CLI: {exc}")
         return None
 
-    if result.returncode != 0:
-        print(f"❌ [Extractor] Claude CLI exited {result.returncode}: "
-              f"{result.stderr.strip()[:500]}")
-        return None
-
+    # `claude -p ... --output-format json` prints a JSON envelope to stdout
+    # EVEN ON FAILURE (e.g. not logged in) — the useful error text is in the
+    # envelope's "result" field with "is_error": true, not in stderr/the
+    # process exit code. So: always try to parse stdout as JSON first, and
+    # only fall back to the exit code/stderr if stdout wasn't JSON at all
+    # (verified against a real un-authenticated CLI call: exit code 1,
+    # stdout = {"type":"result","is_error":true,"result":"Not logged in "
+    # "· Please run /login", ...}).
     try:
         envelope = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        print(f"❌ [Extractor] Could not parse Claude CLI JSON output: {exc}")
+    except json.JSONDecodeError:
+        print(f"❌ [Extractor] Claude CLI exited {result.returncode} with "
+              f"non-JSON output: {(result.stderr or result.stdout).strip()[:500]}")
         return None
 
-    # `claude -p ... --output-format json` wraps the reply in an envelope
-    # (type/session_id/... plus the actual text under "result").
+    if isinstance(envelope, dict) and envelope.get("is_error"):
+        print(f"❌ [Extractor] Claude CLI reported an error: "
+              f"{envelope.get('result', '(no message)')}")
+        return None
+
+    # The actual reply text is under "result".
     text = envelope.get("result", "") if isinstance(envelope, dict) else ""
     parsed = extract_json(text)
     if parsed is None:
