@@ -1,0 +1,19 @@
+[Unit]
+Description=StrategyHarvester dashboard (static file server for docs/)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# __USER__ and __PROJECT_DIR__ are substituted by scripts/setup_oracle_timers.sh.
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__/docs
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stratharv-dashboard
+
+[Install]
+WantedBy=multi-user.target

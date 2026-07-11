@@ -36,8 +36,21 @@ In the console: **Compute → Instances → Create Instance**.
 
 ## Step 3 — Networking
 
-**Nothing to open.** Everything here is outbound-only — no health endpoint,
-no inbound ports needed.
+The scanner and content-intelligence timers are outbound-only — nothing to
+open for those. **If you want the dashboard reachable from outside the VM**
+(`oracle_dashboard.service`, serving `docs/index.html` on `:8080`), open port
+8080 in **two** places (both are required — either one alone isn't enough):
+- **Oracle Cloud Console** (VCN-level firewall): **Networking → Virtual Cloud
+  Networks → (your VCN) → Security Lists → Default Security List → Add
+  Ingress Rule** — Source CIDR `0.0.0.0/0` (or your own IP for privacy),
+  IP Protocol TCP, Destination Port 8080.
+- **The VM's own iptables** (done automatically by
+  `scripts/setup_oracle_timers.sh` if `oracle_dashboard.service` is
+  installed — see Step 7).
+
+The dashboard has no authentication, so anyone with the URL can view it.
+Restricting the Console's ingress rule to your own IP is more private than
+`0.0.0.0/0` if that matters to you.
 
 ## Step 4 — SSH into the VM
 
@@ -87,10 +100,14 @@ Optional: the `X_*` keys for sentiment/scraping. Save with `Ctrl+O`, `Ctrl+X`.
 chmod +x scripts/setup_oracle_timers.sh
 ./scripts/setup_oracle_timers.sh
 ```
-This installs and starts two independent systemd timer/service pairs:
+This installs and starts two independent systemd timer/service pairs, plus a
+persistent dashboard server:
 - `oracle_scan.timer` → `oracle_scan.service` — price scanner, every 30 min.
 - `oracle_content_intel.timer` → `oracle_content_intel.service` — content
   watchlist, every 4 hours.
+- `oracle_dashboard.service` — always-on, serves `docs/index.html` on
+  `:8080`. Reachable at `http://<VM_PUBLIC_IP>:8080/` once you've also
+  opened the port in the Oracle Cloud Console (Step 3).
 
 ## Step 8 — Watch the logs
 

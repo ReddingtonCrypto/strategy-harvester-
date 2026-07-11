@@ -35,9 +35,18 @@ install_pair() {
 install_pair "oracle_scan"
 install_pair "oracle_content_intel"
 
+echo "==> Installing oracle_dashboard.service (serves docs/ on :8080)..."
+TMP="$(mktemp)"
+sed -e "s#__USER__#${RUN_USER}#g" \
+    -e "s#__PROJECT_DIR__#${PROJECT_DIR}#g" \
+    "$PROJECT_DIR/scripts/oracle_dashboard.service" > "$TMP"
+sudo cp "$TMP" /etc/systemd/system/oracle_dashboard.service
+rm -f "$TMP"
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now oracle_scan.timer
 sudo systemctl enable --now oracle_content_intel.timer
+sudo systemctl enable --now oracle_dashboard.service
 
 cat <<EOF
 
@@ -46,6 +55,10 @@ cat <<EOF
 
  Price scanner   : every 30 min  (systemctl status oracle_scan.timer)
  Content intel   : every 4 hours (systemctl status oracle_content_intel.timer)
+ Dashboard       : http://<VM_PUBLIC_IP>:8080/  (systemctl status oracle_dashboard.service)
+                   Requires port 8080 open in the Oracle Cloud Console's
+                   Security List (VCN level) — this script can't do that
+                   part; see deploy.md.
 
  Trigger a run immediately without waiting for the schedule:
    sudo systemctl start oracle_scan.service
