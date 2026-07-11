@@ -82,20 +82,38 @@ class YouTubeReader(BaseReader):
 
     @staticmethod
     def _try_transcript_api(video_id: str) -> str | None:
-        """Attempt to fetch a transcript; return text or None on failure."""
+        """Attempt to fetch a transcript; return text or None on failure.
+
+        youtube-transcript-api v1.x replaced the old
+        `YouTubeTranscriptApi.get_transcript(video_id)` classmethod with an
+        instance-based API (`YouTubeTranscriptApi().fetch(...)`) — calling
+        the old method now raises AttributeError, silently failing every
+        video regardless of whether captions exist (caught live via the
+        dashboard's single-video box). Tries English first (fast path,
+        most common), then falls back to whatever transcript IS available
+        in ANY language rather than giving up — non-English source content
+        still has value for extraction.
+        """
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
         except ImportError:
             print("⚠️  [YouTube] youtube-transcript-api not installed.")
             return None
 
+        api = YouTubeTranscriptApi()
         try:
-            # Works across library versions: list segments then join text.
-            segments = YouTubeTranscriptApi.get_transcript(video_id)
-            return " ".join(seg.get("text", "") for seg in segments)
-        except Exception as exc:  # library raises several exception types
-            print(f"ℹ️  [YouTube] Transcript API unavailable: {exc}")
-            return None
+            fetched = api.fetch(video_id, languages=("en", "en-US", "en-GB"))
+        except Exception:
+            try:
+                transcript_list = api.list(video_id)
+                transcript = next(iter(transcript_list))
+                fetched = transcript.fetch()
+            except Exception as exc:  # no transcript in any language
+                print(f"ℹ️  [YouTube] Transcript API unavailable: {exc}")
+                return None
+
+        segments = fetched.to_raw_data()
+        return " ".join(seg.get("text", "") for seg in segments)
 
     @staticmethod
     def _transcribe_with_whisper(url: str, model_name: str) -> str | None:
