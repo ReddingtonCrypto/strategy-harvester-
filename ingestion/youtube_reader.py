@@ -72,7 +72,7 @@ class YouTubeReader(BaseReader):
         if re.fullmatch(r"[A-Za-z0-9_-]{11}", url):
             return url
         patterns = [
-            r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})",
+            r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/|/live/)([A-Za-z0-9_-]{11})",
         ]
         for pat in patterns:
             m = re.search(pat, url)
