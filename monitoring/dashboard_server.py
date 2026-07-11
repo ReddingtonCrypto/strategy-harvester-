@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 from fastapi import FastAPI, Form, Request
@@ -286,7 +287,23 @@ def _recent_content_html(rows: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
-def _dashboard_page() -> str:
+def _video_msg_html(video_msg: str) -> str:
+    if not video_msg:
+        return ""
+    kind, _, detail = video_msg.partition(":")
+    if kind == "success":
+        return (f'<div class="muted" style="color:var(--win);margin-bottom:8px">'
+                f"✅ Strategy extracted: <b>{_esc(detail)}</b></div>")
+    if kind == "none":
+        return ('<div class="muted" style="margin-bottom:8px">'
+                'ℹ️ No strategy found in that video (or confidence was 0).</div>')
+    if kind == "error":
+        return (f'<div class="muted" style="color:var(--loss);margin-bottom:8px">'
+                f"❌ {_esc(detail)}</div>")
+    return ""
+
+
+def _dashboard_page(video_msg: str = "") -> str:
     from monitoring import dashboard as static_dashboard
     from storage import database as db
 
@@ -294,6 +311,7 @@ def _dashboard_page() -> str:
     sources = db.list_sources()
     strategy_rows = _strategy_status_rows()
     recent = _recent_content_cards()
+    video_msg_html = _video_msg_html(video_msg)
 
     scan = stats["scan"]
     ov = stats["overall"]
@@ -349,7 +367,67 @@ def _dashboard_page() -> str:
   </table>
   </div>
 
+  <h2>Scoreboard (all signals)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Total signals</div>
+      <div class="value">{ov['total']}</div>
+      <div class="muted">{ov['pending']} pending</div></div>
+    <div class="card"><div class="label">Wins</div>
+      <div class="value ok">{ov['wins']}</div></div>
+    <div class="card"><div class="label">Losses</div>
+      <div class="value bad">{ov['losses']}</div></div>
+    <div class="card"><div class="label">Win rate</div>
+      <div class="value">{ov['win_rate']}%</div>
+      <div class="muted">PF {ov_pf} · {ov['decided']} decided</div></div>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Strategy</th><th>Signals</th><th>W</th><th>L</th>
+      <th>Pend</th><th>Win% / PF</th></tr></thead>
+    <tbody>{static_dashboard._scoreboard_html(stats['per_strategy'])}</tbody>
+  </table>
+  </div>
+
+  <h2>Performance by Strategy &amp; Timeframe</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Strategy / TF</th><th>Mode</th><th>Signals</th>
+      <th>Win%</th><th>PF</th><th>W/L/Pending</th></tr></thead>
+    <tbody>{static_dashboard._breakdown_html(stats['breakdown'])}</tbody>
+  </table>
+  </div>
+
+  <h2>Full Signal Log (live + shadow)</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    {ov['total']} signals · newest first · every signal that fires, alerted or
+    not.</div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Date (UTC)</th><th>Coin</th><th>Strategy</th><th>TF</th>
+      <th>Mode</th><th>Conf</th><th>Outcome</th></tr></thead>
+    <tbody>{static_dashboard._signal_rows_html(stats['signals'])}</tbody>
+  </table>
+  </div>
+
+  <h2>Coins Currently Watched</h2>
+  <div>{static_dashboard._coins_html(stats['coins'])}</div>
+
+  <h2>Process one YouTube video right now</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    For a single video you found (not an ongoing channel) — extracts
+    immediately, waits for the result, does NOT add anything to the
+    watchlist below.</div>
+  {video_msg_html}
+  <form class="add-form" method="post" action="/process-video">
+    <input type="text" name="video_url" placeholder="https://youtube.com/watch?v=..."
+      style="flex:2" required>
+    <button type="submit">Extract now</button>
+  </form>
+
   <h2>Content watchlist</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Ongoing channels/accounts, checked automatically every 4 hours — use a
+    <b>channel</b> URL (e.g. youtube.com/@name), not a single video link.</div>
   <div class="scroll">
   <table>
     <thead><tr><th>Type</th><th>Identifier</th><th>Label</th>
@@ -414,10 +492,38 @@ def logout():
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
+def index(request: Request, video_msg: str = ""):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=303)
-    return _dashboard_page()
+    return _dashboard_page(video_msg)
+
+
+@app.post("/process-video")
+def process_video_route(request: Request, video_url: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    from ingestion.base_reader import IngestionError
+    from ingestion.youtube_reader import YouTubeReader
+    from extraction.strategy_extractor import extract_strategy
+    from storage import strategy_store
+    from utils.helpers import load_config
+
+    url = video_url.strip()
+    extraction_mode = load_config().get("extraction_mode")
+    try:
+        text = YouTubeReader().read(url)
+    except IngestionError as exc:
+        return RedirectResponse(f"/?video_msg=error:{quote(str(exc))}", status_code=303)
+    except Exception as exc:  # noqa: BLE001 — never 500 the whole dashboard
+        return RedirectResponse(f"/?video_msg=error:{quote(str(exc))}", status_code=303)
+
+    card = extract_strategy(text, source_type="youtube", source_url=url,
+                            force_mode=extraction_mode)
+    if card and card.confidence_score > 0:
+        strategy_store.save_card(card)
+        return RedirectResponse(f"/?video_msg=success:{quote(card.name)}", status_code=303)
+    return RedirectResponse("/?video_msg=none", status_code=303)
 
 
 @app.post("/sources")
