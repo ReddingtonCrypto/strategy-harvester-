@@ -38,8 +38,9 @@ In the console: **Compute → Instances → Create Instance**.
 
 The scanner and content-intelligence timers are outbound-only — nothing to
 open for those. **If you want the dashboard reachable from outside the VM**
-(`oracle_dashboard.service`, serving `docs/index.html` on `:8080`), open port
-8080 in **two** places (both are required — either one alone isn't enough):
+(`oracle_dashboard.service`, a live FastAPI app on `:8080` — see below), open
+port 8080 in **two** places (both are required — either one alone isn't
+enough):
 - **Oracle Cloud Console** (VCN-level firewall): **Networking → Virtual Cloud
   Networks → (your VCN) → Security Lists → Default Security List → Add
   Ingress Rule** — Source CIDR `0.0.0.0/0` (or your own IP for privacy),
@@ -48,9 +49,10 @@ open for those. **If you want the dashboard reachable from outside the VM**
   `scripts/setup_oracle_timers.sh` if `oracle_dashboard.service` is
   installed — see Step 7).
 
-The dashboard has no authentication, so anyone with the URL can view it.
-Restricting the Console's ingress rule to your own IP is more private than
-`0.0.0.0/0` if that matters to you.
+The dashboard requires a login (`DASHBOARD_PASSPHRASE` in `.env` — Step 6) —
+it can add/remove watchlist sources and trigger runs, not just display
+stats, so unlike a purely read-only page it needs *some* protection. It
+fails closed: with no passphrase set, nobody can log in at all.
 
 ## Step 4 — SSH into the VM
 
@@ -69,7 +71,9 @@ chmod +x scripts/setup_oracle.sh
 This installs Python 3.11, creates the venv, installs `requirements_prod.txt`,
 creates runtime folders, and copies `.env` from the template.
 
-Then install the content-intelligence dependencies into the same venv:
+Then install the content-intelligence and dashboard dependencies into the
+same venv (the timer-install script in Step 7 does the dashboard ones
+automatically, but content-intelligence's are needed before that):
 ```bash
 ./.venv/bin/python -m pip install -r requirements_content_intel.txt
 ```
@@ -88,11 +92,14 @@ sudo npm install -g @anthropic-ai/claude-code
 nano ~/strategy_harvester/.env
 ```
 Required for live alerts: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
-`BINANCE_API_KEY`/`BINANCE_API_SECRET`. For daily learning: `CLAUDE_API_KEY`.
-For SUBSCRIPTION-mode extraction: `CLAUDE_CODE_OAUTH_TOKEN`. For the Telegram
-content-intelligence watchlist: `TELEGRAM_API_ID`/`API_HASH`/`PHONE` plus
-`TELEGRAM_SESSION_STRING` (see SUMMARY_PHASE1.md for how to generate one).
-Optional: the `X_*` keys for sentiment/scraping. Save with `Ctrl+O`, `Ctrl+X`.
+`BINANCE_API_KEY`/`BINANCE_API_SECRET`. Required for the dashboard:
+`DASHBOARD_PASSPHRASE` (anything you choose — it fails closed without one).
+For daily learning: `CLAUDE_API_KEY` (optional — degrades to a heuristic
+fallback without it, see `learning/pattern_finder.py`). For SUBSCRIPTION-mode
+extraction: `CLAUDE_CODE_OAUTH_TOKEN`. For the Telegram content-intelligence
+watchlist: `TELEGRAM_API_ID`/`API_HASH`/`PHONE` plus `TELEGRAM_SESSION_STRING`
+(see SUMMARY_PHASE1.md for how to generate one). Optional: the `X_*` keys for
+X watchlist ingestion. Save with `Ctrl+O`, `Ctrl+X`.
 
 ## Step 7 — Install and start the timers
 
@@ -100,14 +107,21 @@ Optional: the `X_*` keys for sentiment/scraping. Save with `Ctrl+O`, `Ctrl+X`.
 chmod +x scripts/setup_oracle_timers.sh
 ./scripts/setup_oracle_timers.sh
 ```
-This installs and starts two independent systemd timer/service pairs, plus a
-persistent dashboard server:
+This installs and starts three independent systemd timer/service pairs, plus
+a persistent live dashboard server:
 - `oracle_scan.timer` → `oracle_scan.service` — price scanner, every 30 min.
 - `oracle_content_intel.timer` → `oracle_content_intel.service` — content
-  watchlist, every 4 hours.
-- `oracle_dashboard.service` — always-on, serves `docs/index.html` on
-  `:8080`. Reachable at `http://<VM_PUBLIC_IP>:8080/` once you've also
-  opened the port in the Oracle Cloud Console (Step 3).
+  watchlist (YouTube/Telegram/X), every 4 hours.
+- `oracle_adaptation.timer` → `oracle_adaptation.service` — daily
+  learning/adaptation run, 01:00 UTC.
+- `oracle_dashboard.service` — always-on, a live FastAPI app
+  (`monitoring/dashboard_server.py`) on `:8080`. Log in with
+  `DASHBOARD_PASSPHRASE`; from there you can add/remove watchlist sources,
+  see which strategies are live/shadow/not-running, browse recent
+  content-intelligence activity, and trigger any of the three jobs above
+  immediately instead of waiting for their schedule. Reachable at
+  `http://<VM_PUBLIC_IP>:8080/` once you've also opened the port in the
+  Oracle Cloud Console (Step 3).
 
 ## Step 8 — Watch the logs
 
@@ -126,16 +140,18 @@ that confirms the bot token + chat id are correct.
 
 ## Operating it
 
-| Action | Command |
+| Action | Command / place |
 |---|---|
+| Add/remove watchlist sources, trigger a run, see strategy status | The dashboard at `:8080` (easiest) |
 | List all timers + next run time | `systemctl list-timers` |
-| Status | `systemctl status oracle_scan.timer` / `oracle_content_intel.timer` |
-| Run immediately (don't wait for the schedule) | `sudo systemctl start oracle_scan.service` / `oracle_content_intel.service` |
+| Status | `systemctl status oracle_scan.timer` / `oracle_content_intel.timer` / `oracle_adaptation.timer` |
+| Run immediately from the CLI (equivalent to the dashboard's buttons) | `sudo systemctl start oracle_scan.service` / `oracle_content_intel.service` / `oracle_adaptation.service` |
 | Stop a timer | `sudo systemctl stop oracle_scan.timer` |
-| Live logs | `journalctl -u oracle_scan.service -f` |
+| Live logs | `journalctl -u oracle_scan.service -f` (or `oracle_dashboard.service` for the web app itself) |
 | Update config (coins, thresholds) | edit `config.json` — picked up on the next scheduled run automatically, nothing to restart |
-| Add a YouTube/Telegram watchlist source | `python main.py add-source --type youtube --identifier "..." --label "..."` |
-| List watchlist sources | `python main.py list-sources` |
+| Add a watchlist source from the CLI instead | `python main.py add-source --type youtube\|telegram\|twitter --identifier "..." --label "..."` |
+| List watchlist sources from the CLI | `python main.py list-sources` |
+| Change the dashboard passphrase | edit `DASHBOARD_PASSPHRASE` in `.env`, then `sudo systemctl restart oracle_dashboard.service` |
 
 ## Notes
 - **State persistence:** unlike the GitHub Actions workflows (which commit

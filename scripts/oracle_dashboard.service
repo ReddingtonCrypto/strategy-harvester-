@@ -1,5 +1,5 @@
 [Unit]
-Description=StrategyHarvester dashboard (static file server for docs/)
+Description=StrategyHarvester live dashboard (management UI, Phase 3)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 # __USER__ and __PROJECT_DIR__ are substituted by scripts/setup_oracle_timers.sh.
 User=__USER__
-WorkingDirectory=__PROJECT_DIR__/docs
-ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PROJECT_DIR__/.venv/bin/python -m uvicorn monitoring.dashboard_server:app --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=10
 StandardOutput=journal

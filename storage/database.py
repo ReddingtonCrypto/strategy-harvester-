@@ -586,6 +586,18 @@ def list_sources(source_type: Optional[str] = None,
         return []
 
 
+def delete_source(source_id: int) -> bool:
+    """Remove a source from the watchlist. Returns True if a row was removed."""
+    try:
+        with get_connection() as conn:
+            cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error as exc:
+        print(f"❌ Failed to delete source id={source_id}: {exc}")
+        return False
+
+
 def update_source_checkpoint(source_id: int, last_checked_at: str,
                              last_item_id: Optional[str] = None) -> bool:
     """Update a source's checkpoint after a watchlist processing pass.

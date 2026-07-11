@@ -1,0 +1,8 @@
+# ===== StrategyHarvester — live dashboard server (Phase 3) dependencies =====
+# Only what monitoring/dashboard_server.py needs. Separate from
+# requirements_prod.txt (fastapi/uvicorn are deliberately excluded there —
+# "the REST API is not run in prod" refers to api/app.py, a different app).
+
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32   # required for FastAPI Form() parsing

@@ -38,7 +38,17 @@ install_pair "oracle_scan"
 install_pair "oracle_content_intel"
 install_pair "oracle_adaptation"
 
-echo "==> Installing oracle_dashboard.service (serves docs/ on :8080)..."
+echo "==> Installing dashboard dependencies (fastapi/uvicorn)..."
+"$PROJECT_DIR/.venv/bin/python" -m pip install -r "$PROJECT_DIR/requirements_dashboard.txt"
+
+if ! grep -q "^DASHBOARD_PASSPHRASE=.\+" "$PROJECT_DIR/.env" 2>/dev/null; then
+  echo "⚠️  DASHBOARD_PASSPHRASE is not set in .env — the live dashboard will"
+  echo "    refuse all logins until you set one:"
+  echo "      nano $PROJECT_DIR/.env"
+  echo "    then: sudo systemctl restart oracle_dashboard.service"
+fi
+
+echo "==> Installing oracle_dashboard.service (live management UI on :8080)..."
 TMP="$(mktemp)"
 sed -e "s#__USER__#${RUN_USER}#g" \
     -e "s#__PROJECT_DIR__#${PROJECT_DIR}#g" \
@@ -61,11 +71,15 @@ cat <<EOF
  Content intel   : every 4 hours (systemctl status oracle_content_intel.timer)
  Daily adaptation: 01:00 UTC     (systemctl status oracle_adaptation.timer)
  Dashboard       : http://<VM_PUBLIC_IP>:8080/  (systemctl status oracle_dashboard.service)
+                   Login with DASHBOARD_PASSPHRASE from .env. Add/remove
+                   watchlist sources, see strategy status, trigger any of
+                   the three jobs below — all from the browser now.
                    Requires port 8080 open in the Oracle Cloud Console's
                    Security List (VCN level) — this script can't do that
                    part; see deploy.md.
 
- Trigger a run immediately without waiting for the schedule:
+ Trigger a run immediately without waiting for the schedule (from the
+ dashboard's "Run now" buttons, or from the command line):
    sudo systemctl start oracle_scan.service
    sudo systemctl start oracle_content_intel.service
    sudo systemctl start oracle_adaptation.service
