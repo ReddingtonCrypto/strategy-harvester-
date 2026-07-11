@@ -19,6 +19,19 @@ from models.strategy_card import StrategyCard
 from storage import strategy_store
 from utils.helpers import extract_json, load_config
 
+# Set by _call_vision right before it returns None on a real failure (CLI
+# missing, CLI error, etc) — lets callers surface the actual reason instead
+# of a generic "could not read the image" message. Reset at the top of
+# every _call_vision() call.
+LAST_ERROR: Optional[str] = None
+
+
+def _set_error(msg: str) -> None:
+    global LAST_ERROR
+    LAST_ERROR = msg
+    print(f"❌ [Image] {msg}")
+
+
 # Extension → Claude media type.
 _MEDIA_TYPES = {
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -154,11 +167,14 @@ def _call_vision(b64: str, media_type: str, prompt: str) -> Optional[str]:
     import tempfile
     import time as _time
 
-    from extraction.strategy_extractor import _SUBSCRIPTION_MODEL
+    from extraction.strategy_extractor import OPUS_MODEL
+
+    global LAST_ERROR
+    LAST_ERROR = None
 
     if shutil.which("claude") is None:
-        print("❌ [Image] 'claude' CLI not found on PATH — cannot use "
-              "subscription mode. Install Claude Code to use this feature.")
+        _set_error("'claude' CLI not found on PATH — cannot use subscription "
+                   "mode. Install Claude Code to use this feature.")
         return None
 
     ext = media_type.split("/")[-1].replace("jpeg", "jpg")
@@ -173,16 +189,16 @@ def _call_vision(b64: str, media_type: str, prompt: str) -> Optional[str]:
     env.pop("ANTHROPIC_API_KEY", None)
 
     cmd = ["claude", "-p", cli_prompt, "--output-format", "json",
-           "--model", _SUBSCRIPTION_MODEL, "--allowedTools", "Read"]
+           "--model", OPUS_MODEL, "--allowedTools", "Read"]
     try:
-        print("🔑 [Image] Calling local Claude CLI (subscription mode)...")
+        print("🔑 [Image] Calling local Claude CLI (subscription mode, Opus 4.8)...")
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120, env=env, check=False)
     except subprocess.TimeoutExpired:
-        print("❌ [Image] Claude CLI call timed out after 120s.")
+        _set_error("Claude CLI call timed out after 120s.")
         return None
     except OSError as exc:
-        print(f"❌ [Image] Could not run the Claude CLI: {exc}")
+        _set_error(f"Could not run the Claude CLI: {exc}")
         return None
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -190,13 +206,13 @@ def _call_vision(b64: str, media_type: str, prompt: str) -> Optional[str]:
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"❌ [Image] Claude CLI exited {result.returncode} with "
-              f"non-JSON output: {(result.stderr or result.stdout).strip()[:500]}")
+        _set_error(f"Claude CLI exited {result.returncode} with non-JSON "
+                   f"output: {(result.stderr or result.stdout).strip()[:500]}")
         return None
 
     if isinstance(envelope, dict) and envelope.get("is_error"):
-        print(f"❌ [Image] Claude CLI reported an error: "
-              f"{envelope.get('result', '(no message)')}")
+        _set_error(f"Claude CLI reported an error: "
+                   f"{envelope.get('result', '(no message)')}")
         return None
 
     return envelope.get("result", "") if isinstance(envelope, dict) else ""
@@ -229,11 +245,12 @@ def extract_from_image(image_data: dict[str, Any]) -> Optional[dict[str, Any]]:
     text = _call_vision(image_data["image_base64"],
                         image_data.get("media_type", "image/png"), prompt)
     if not text:
-        print("❌ [Image] Claude could not read the image (no response).")
+        if not LAST_ERROR:
+            _set_error("Claude could not read the image (no response).")
         return None
     parsed = extract_json(text)
     if parsed is None:
-        print("❌ [Image] Could not parse a strategy from Claude's response.")
+        _set_error("Could not parse a strategy from Claude's response.")
         return None
     return parsed
 

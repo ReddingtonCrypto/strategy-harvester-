@@ -290,8 +290,8 @@ def _parse_message_link(url: str) -> tuple[str, int] | None:
     return m.group(1), int(m.group(2))
 
 
-def process_single_message(message_url: str, *, extraction_mode: str | None = None
-                           ) -> dict:
+def process_single_message(message_url: str, *, extraction_mode: str | None = None,
+                           model: str | None = None) -> dict:
     """Fetch and extract ONE standalone Telegram message immediately.
 
     Headless-safe: never calls input() or an interactive login. Returns
@@ -315,14 +315,15 @@ def process_single_message(message_url: str, *, extraction_mode: str | None = No
 
     try:
         return asyncio.run(
-            _process_single_message_async(channel, message_id, extraction_mode))
+            _process_single_message_async(channel, message_id, extraction_mode, model))
     except IngestionError as exc:
         result["error"] = str(exc)
         return result
 
 
 async def _process_single_message_async(channel: str, message_id: int,
-                                        extraction_mode: str | None) -> dict:
+                                        extraction_mode: str | None,
+                                        model: str | None = None) -> dict:
     """Async worker behind process_single_message(). See that docstring."""
     from extraction.strategy_extractor import extract_strategy
     from storage import strategy_store
@@ -351,7 +352,7 @@ async def _process_single_message_async(channel: str, message_id: int,
         card = extract_strategy(
             clean_text(msg.text), source_type="telegram",
             source_url=f"https://t.me/{channel}/{message_id}",
-            force_mode=extraction_mode)
+            force_mode=extraction_mode, model=model)
         if card and card.confidence_score > 0:
             strategy_store.save_card(card)
             result["strategy"] = card.name

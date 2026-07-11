@@ -50,6 +50,24 @@ _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # Claude model used for SUBSCRIPTION mode (same tier as AUTO — Haiku).
 _SUBSCRIPTION_MODEL = "claude-haiku-4-5-20251001"
 
+# Higher-quality model for callers that explicitly want it (the dashboard's
+# manual-paste routes — transcript/text/image/single-message).
+OPUS_MODEL = "claude-opus-4-8"
+
+# Set by _extract_auto/_extract_subscription right before they return None on
+# a real failure (CLI missing, API error, etc — NOT a legitimate "no strategy
+# in this content" result). Callers that only see extract_strategy() return
+# None can check this to tell the two cases apart and surface a real error
+# instead of a generic "nothing found" message. Reset at the top of every
+# extract_strategy() call.
+LAST_ERROR: Optional[str] = None
+
+
+def _set_error(msg: str) -> None:
+    global LAST_ERROR
+    LAST_ERROR = msg
+    print(f"❌ [Extractor] {msg}")
+
 _VALID_MODES = ("manual", "auto", "subscription")
 
 
@@ -85,6 +103,7 @@ def extract_strategy(
     source_type: str = "manual",
     source_url: str = "",
     force_mode: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Optional[StrategyCard]:
     """Extract a Strategy Card from raw text.
 
@@ -98,12 +117,20 @@ def extract_strategy(
         Link or channel/source label — stored on the card.
     force_mode : 'manual' | 'auto' | None
         Override the mode chosen from config/.env. Mostly for testing.
+    model : str | None
+        Override the Claude model used (AUTO/SUBSCRIPTION modes only).
+        Defaults to the fast Haiku tier when omitted — callers that want
+        higher-quality extraction (e.g. the dashboard's manual-paste
+        routes) pass an explicit model like "claude-opus-4-8".
 
     Returns
     -------
     StrategyCard | None
         The extracted card, or None if extraction was cancelled/failed.
     """
+    global LAST_ERROR
+    LAST_ERROR = None
+
     if not raw_text or not raw_text.strip():
         print("⚠️  [Extractor] No content to analyse.")
         return None
@@ -115,9 +142,9 @@ def extract_strategy(
     print(f"🧩 [Extractor] Running in {mode.upper()} mode.")
 
     if mode == "auto":
-        extracted = _extract_auto(raw_text, api_key)
+        extracted = _extract_auto(raw_text, api_key, model=model)
     elif mode == "subscription":
-        extracted = _extract_subscription(raw_text)
+        extracted = _extract_subscription(raw_text, model=model)
     else:
         extracted = _extract_manual(raw_text)
 
@@ -181,12 +208,13 @@ def _extract_manual(raw_text: str) -> Optional[dict]:
 
 # --- AUTO mode -----------------------------------------------------------
 
-def _extract_auto(raw_text: str, api_key: str) -> Optional[dict]:
+def _extract_auto(raw_text: str, api_key: str, *, model: Optional[str] = None
+                  ) -> Optional[dict]:
     """Call the Claude API and parse the JSON response."""
     try:
         import anthropic
     except ImportError:
-        print("❌ [Extractor] 'anthropic' not installed — cannot use AUTO mode.")
+        _set_error("'anthropic' not installed — cannot use AUTO mode.")
         return None
 
     prompt = build_prompt(raw_text)
@@ -194,7 +222,7 @@ def _extract_auto(raw_text: str, api_key: str) -> Optional[dict]:
         print("🤖 [Extractor] Calling Claude API...")
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
-            model=_DEFAULT_MODEL,
+            model=model or _DEFAULT_MODEL,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -204,19 +232,20 @@ def _extract_auto(raw_text: str, api_key: str) -> Optional[dict]:
             if getattr(block, "type", None) == "text"
         )
     except Exception as exc:
-        print(f"❌ [Extractor] Claude API call failed: {exc}")
+        _set_error(f"Claude API call failed: {exc}")
         return None
 
     parsed = extract_json(text)
     if parsed is None:
-        print("❌ [Extractor] Could not parse JSON from Claude's response.")
+        _set_error("Could not parse JSON from Claude's response.")
         return None
     return parsed
 
 
 # --- SUBSCRIPTION mode -----------------------------------------------------
 
-def _extract_subscription(raw_text: str) -> Optional[dict]:
+def _extract_subscription(raw_text: str, *, model: Optional[str] = None
+                          ) -> Optional[dict]:
     """Call the local `claude` CLI headlessly instead of a billed API key.
 
     Uses whatever auth the CLI already has configured on this machine — an
@@ -233,9 +262,9 @@ def _extract_subscription(raw_text: str) -> Optional[dict]:
     import subprocess
 
     if shutil.which("claude") is None:
-        print("❌ [Extractor] 'claude' CLI not found on PATH — cannot use "
-              "SUBSCRIPTION mode. Install Claude Code, or switch "
-              "\"extraction_mode\" in config.json to \"manual\" or \"auto\".")
+        _set_error("'claude' CLI not found on PATH — cannot use SUBSCRIPTION "
+                   "mode. Install Claude Code, or switch \"extraction_mode\" "
+                   "in config.json to \"manual\" or \"auto\".")
         return None
 
     prompt = build_prompt(raw_text)
@@ -244,17 +273,17 @@ def _extract_subscription(raw_text: str) -> Optional[dict]:
     env.pop("ANTHROPIC_API_KEY", None)
 
     cmd = ["claude", "-p", prompt, "--output-format", "json",
-           "--model", _SUBSCRIPTION_MODEL]
+           "--model", model or _SUBSCRIPTION_MODEL]
     try:
         print("🔑 [Extractor] Calling local Claude CLI (subscription mode)...")
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120,
             env=env, check=False)
     except subprocess.TimeoutExpired:
-        print("❌ [Extractor] Claude CLI call timed out after 120s.")
+        _set_error("Claude CLI call timed out after 120s.")
         return None
     except OSError as exc:
-        print(f"❌ [Extractor] Could not run the Claude CLI: {exc}")
+        _set_error(f"Could not run the Claude CLI: {exc}")
         return None
 
     # `claude -p ... --output-format json` prints a JSON envelope to stdout
@@ -268,19 +297,19 @@ def _extract_subscription(raw_text: str) -> Optional[dict]:
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"❌ [Extractor] Claude CLI exited {result.returncode} with "
-              f"non-JSON output: {(result.stderr or result.stdout).strip()[:500]}")
+        _set_error(f"Claude CLI exited {result.returncode} with non-JSON "
+                   f"output: {(result.stderr or result.stdout).strip()[:500]}")
         return None
 
     if isinstance(envelope, dict) and envelope.get("is_error"):
-        print(f"❌ [Extractor] Claude CLI reported an error: "
-              f"{envelope.get('result', '(no message)')}")
+        _set_error(f"Claude CLI reported an error: "
+                   f"{envelope.get('result', '(no message)')}")
         return None
 
     # The actual reply text is under "result".
     text = envelope.get("result", "") if isinstance(envelope, dict) else ""
     parsed = extract_json(text)
     if parsed is None:
-        print("❌ [Extractor] Could not parse a strategy from the CLI response.")
+        _set_error("Could not parse a strategy from the CLI response.")
         return None
     return parsed

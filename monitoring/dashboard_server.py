@@ -203,12 +203,21 @@ _BASE_CSS = """
     margin-bottom:14px; }
   .add-form select, .add-form input[type=text] { flex:1; min-width:140px; }
   a.logout { color:var(--muted); font-size:12px; text-decoration:none; float:right; }
+  .flash { padding:12px 14px; border-radius:8px; margin-bottom:14px; font-size:13px;
+    border:1px solid; }
+  .flash.success { background:rgba(63,185,80,.12); border-color:rgba(63,185,80,.4);
+    color:var(--win); }
+  .flash.error { background:rgba(248,81,73,.12); border-color:rgba(248,81,73,.4);
+    color:var(--loss); }
+  .flash.info { background:rgba(139,148,158,.12); border-color:var(--border);
+    color:var(--txt); }
+  details > summary { cursor:pointer; color:var(--muted); font-size:12px; padding:8px 2px; }
+  .hint { color:var(--muted); font-size:11px; margin:-6px 0 8px; }
 """
 
 
 def _login_page(error: str = "") -> str:
-    err_html = (f'<div class="muted" style="color:var(--loss);margin-bottom:10px">'
-                f'{_esc(error)}</div>' if error else "")
+    err_html = f'<div class="flash error"><b>❌</b> {_esc(error)}</div>' if error else ""
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -297,11 +306,9 @@ def _flash_html(msg: str) -> str:
     if not msg:
         return ""
     kind, _, detail = msg.partition(":")
-    icon_color = {"success": ("✅", "var(--win)"), "error": ("❌", "var(--loss)"),
-                 "info": ("ℹ️", "var(--muted)")}
-    icon, color = icon_color.get(kind, ("ℹ️", "var(--muted)"))
-    return (f'<div class="muted" style="color:{color};margin-bottom:10px">'
-            f"{icon} {_esc(detail)}</div>")
+    icon = {"success": "✅", "error": "❌", "info": "ℹ️"}.get(kind, "ℹ️")
+    cls = kind if kind in ("success", "error", "info") else "info"
+    return f'<div class="flash {cls}"><b>{icon}</b> {_esc(detail)}</div>'
 
 
 def _dashboard_page(msg: str = "") -> str:
@@ -320,6 +327,24 @@ def _dashboard_page(msg: str = "") -> str:
     health_txt = "Healthy ✅" if stats["healthy"] else "Degraded ⚠️"
     health_cls = "ok" if stats["healthy"] else "bad"
     ov_pf = "∞" if ov["profit_factor"] >= 999 else f"{ov['profit_factor']:.2f}"
+
+    signal_log_head = 12
+    signals_all = stats["signals"]
+    signal_rows_head = static_dashboard._signal_rows_html(signals_all[:signal_log_head])
+    older_signals = signals_all[signal_log_head:]
+    older_signals_html = ""
+    if older_signals:
+        older_signals_html = f"""
+  <details style="margin-top:8px">
+    <summary>Show {len(older_signals)} earlier signal(s)</summary>
+    <div class="scroll" style="margin-top:8px">
+    <table>
+      <thead><tr><th>Date (UTC)</th><th>Coin</th><th>Strategy</th><th>TF</th>
+        <th>Mode</th><th>Conf</th><th>Outcome</th></tr></thead>
+      <tbody>{static_dashboard._signal_rows_html(older_signals)}</tbody>
+    </table>
+    </div>
+  </details>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -401,15 +426,16 @@ def _dashboard_page(msg: str = "") -> str:
 
   <h2>Full Signal Log (live + shadow)</h2>
   <div class="muted" style="margin:-4px 0 8px">
-    {ov['total']} signals · newest first · every signal that fires, alerted or
-    not.</div>
+    {ov['total']} signals · newest first · showing latest {min(signal_log_head, ov['total'])}
+    below, older ones collapsed.</div>
   <div class="scroll">
   <table>
     <thead><tr><th>Date (UTC)</th><th>Coin</th><th>Strategy</th><th>TF</th>
       <th>Mode</th><th>Conf</th><th>Outcome</th></tr></thead>
-    <tbody>{static_dashboard._signal_rows_html(stats['signals'])}</tbody>
+    <tbody>{signal_rows_head}</tbody>
   </table>
   </div>
+  {older_signals_html}
 
   <h2>Coins Currently Watched</h2>
   <div>{static_dashboard._coins_html(stats['coins'])}</div>
@@ -431,6 +457,9 @@ def _dashboard_page(msg: str = "") -> str:
       margin-bottom:8px" required></textarea>
     <button type="submit">Extract now</button>
   </form>
+  <div class="hint">Uses Claude Opus 4.8 — can take up to a minute. The button
+    will say "Working…" and the page will reload with a result (green =
+    success, red = error) when it's done.</div>
 
   <h2>Paste text or notes</h2>
   <div class="muted" style="margin:-4px 0 8px">
@@ -445,11 +474,13 @@ def _dashboard_page(msg: str = "") -> str:
       margin-bottom:8px" required></textarea>
     <button type="submit">Extract now</button>
   </form>
+  <div class="hint">Uses Claude Opus 4.8 — can take up to a minute. The button
+    will say "Working…" and the page will reload with a result when it's done.</div>
 
   <h2>Upload an image (chart or post screenshot)</h2>
   <div class="muted" style="margin:-4px 0 8px">
-    Sent to Claude vision for reading — works the same as menu option 17
-    locally, just from the browser.</div>
+    Sent to Claude Opus 4.8 vision for reading — works the same as menu
+    option 17 locally, just from the browser.</div>
   <form class="add-form" method="post" action="/process-image"
     enctype="multipart/form-data" style="flex-direction:column">
     <input type="file" name="image_file" accept="image/png,image/jpeg,image/webp,image/gif"
@@ -458,13 +489,16 @@ def _dashboard_page(msg: str = "") -> str:
       style="width:100%;margin-bottom:8px">
     <button type="submit">Extract now</button>
   </form>
+  <div class="hint">Can take up to a minute. The button will say "Working…"
+    and the page will reload with a result when it's done.</div>
 
   <h2>Process one Telegram message right now</h2>
   <div class="muted" style="margin:-4px 0 8px">
     For a single message you found (not an ongoing channel) — paste a public
     message link (right-click a message → Copy Message Link in Telegram).
     Requires Telegram credentials + an authorized session (see
-    SUMMARY_PHASE1.md); gracefully tells you if that's not set up yet.</div>
+    SUMMARY_PHASE1.md); gracefully tells you if that's not set up yet. Uses
+    Claude Opus 4.8.</div>
   <form class="add-form" method="post" action="/process-telegram-message">
     <input type="text" name="message_url" placeholder="https://t.me/channelname/12345"
       style="flex:2" required>
@@ -505,6 +539,14 @@ def _dashboard_page(msg: str = "") -> str:
   </div>
 
   <footer>StrategyHarvester · live dashboard, data pulled fresh on every load</footer>
+  <script>
+    document.querySelectorAll("form").forEach(function (f) {{
+      f.addEventListener("submit", function () {{
+        var btn = f.querySelector("button[type=submit]");
+        if (btn) {{ btn.disabled = true; btn.textContent = "Working…"; }}
+      }});
+    }});
+  </script>
 </body></html>"""
 
 
@@ -551,17 +593,25 @@ def _extract_and_save(text: str, *, source_type: str, source_url: str,
                       extraction_mode: Optional[str]) -> tuple[bool, str]:
     """Shared extract+save+message logic for the paste-based routes below.
 
+    Always uses Opus 4.8 — this is manually-curated content the user is
+    submitting directly, so it gets the higher-quality model rather than the
+    fast Haiku tier the automated watchlist crons use.
+
     Returns (found, redirect_message) — message already has the "kind:"
     prefix _flash_html() expects.
     """
-    from extraction.strategy_extractor import extract_strategy
-    from storage import strategy_store
+    import extraction.strategy_extractor as extractor
 
-    card = extract_strategy(text, source_type=source_type, source_url=source_url,
-                            force_mode=extraction_mode)
+    card = extractor.extract_strategy(
+        text, source_type=source_type, source_url=source_url,
+        force_mode=extraction_mode, model=extractor.OPUS_MODEL)
     if card and card.confidence_score > 0:
+        from storage import strategy_store
+
         strategy_store.save_card(card)
         return True, "success:" + quote("Strategy extracted: " + card.name)
+    if extractor.LAST_ERROR:
+        return False, "error:" + quote(extractor.LAST_ERROR)
     return False, "info:" + quote("No strategy found (or confidence was 0).")
 
 
@@ -636,8 +686,8 @@ async def process_image_route(request: Request, image_file: UploadFile = File(..
     }
     parsed = image_reader.extract_from_image(image_data)
     if not parsed:
-        return RedirectResponse(
-            f"/?msg=error:{quote('Claude could not read the image.')}", status_code=303)
+        detail = image_reader.LAST_ERROR or "Claude could not read the image."
+        return RedirectResponse(f"/?msg=error:{quote(detail)}", status_code=303)
     card = image_reader.build_and_save_card(parsed, image_data)
     if card:
         success_text = "Strategy extracted: " + card.name
@@ -651,11 +701,13 @@ def process_telegram_message_route(request: Request, message_url: str = Form(...
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=303)
 
+    from extraction.strategy_extractor import OPUS_MODEL
     from ingestion.telegram_reader import process_single_message
     from utils.helpers import load_config
 
     extraction_mode = load_config().get("extraction_mode")
-    result = process_single_message(message_url.strip(), extraction_mode=extraction_mode)
+    result = process_single_message(message_url.strip(), extraction_mode=extraction_mode,
+                                    model=OPUS_MODEL)
 
     if result["error"]:
         return RedirectResponse(f"/?msg=error:{quote(result['error'])}", status_code=303)
