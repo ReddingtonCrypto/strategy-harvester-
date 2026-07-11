@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the StrategyHarvester daily learning/adaptation pass
+
+[Timer]
+# Once/day at 01:00 UTC, matching config.json's adaptation_time_utc default.
+OnCalendar=*-*-* 01:00:00
+Persistent=true
+Unit=oracle_adaptation.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=StrategyHarvester daily learning + adaptation run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# __USER__ and __PROJECT_DIR__ are substituted by setup_oracle_timers.sh.
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PROJECT_DIR__/.venv/bin/python -m scheduler.adaptation_cron
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stratharv-adaptation

@@ -4,15 +4,17 @@
 # Run once, after scripts/setup_oracle.sh, from inside the project dir:
 #   chmod +x scripts/setup_oracle_timers.sh && ./scripts/setup_oracle_timers.sh
 #
-# Installs two independent timer/service pairs:
+# Installs three independent timer/service pairs:
 #   oracle_scan.{service,timer}           price scanner, every 30 min
 #   oracle_content_intel.{service,timer}  content-intelligence watchlist, 4h
+#   oracle_adaptation.{service,timer}     daily learning/adaptation, 01:00 UTC
 #
-# Both call the SAME headless entry points GitHub Actions uses
-# (scheduler.runner_cron / scheduler.content_intelligence_cron) — this is
-# what gives feature parity with the GH Actions workflows (dashboard
-# generation, scan_runs stats, checkpointed watchlist processing, etc.),
-# unlike the older continuous-loop scheduler.runner_prod design.
+# All call the SAME headless entry points GitHub Actions uses
+# (scheduler.runner_cron / scheduler.content_intelligence_cron /
+# scheduler.adaptation_cron) — this is what gives feature parity with the
+# GH Actions workflows (dashboard generation, scan_runs stats, checkpointed
+# watchlist processing, etc.), unlike the older continuous-loop
+# scheduler.runner_prod design.
 #
 set -euo pipefail
 
@@ -34,6 +36,7 @@ install_pair() {
 
 install_pair "oracle_scan"
 install_pair "oracle_content_intel"
+install_pair "oracle_adaptation"
 
 echo "==> Installing oracle_dashboard.service (serves docs/ on :8080)..."
 TMP="$(mktemp)"
@@ -46,6 +49,7 @@ rm -f "$TMP"
 sudo systemctl daemon-reload
 sudo systemctl enable --now oracle_scan.timer
 sudo systemctl enable --now oracle_content_intel.timer
+sudo systemctl enable --now oracle_adaptation.timer
 sudo systemctl enable --now oracle_dashboard.service
 
 cat <<EOF
@@ -55,6 +59,7 @@ cat <<EOF
 
  Price scanner   : every 30 min  (systemctl status oracle_scan.timer)
  Content intel   : every 4 hours (systemctl status oracle_content_intel.timer)
+ Daily adaptation: 01:00 UTC     (systemctl status oracle_adaptation.timer)
  Dashboard       : http://<VM_PUBLIC_IP>:8080/  (systemctl status oracle_dashboard.service)
                    Requires port 8080 open in the Oracle Cloud Console's
                    Security List (VCN level) — this script can't do that
@@ -63,10 +68,12 @@ cat <<EOF
  Trigger a run immediately without waiting for the schedule:
    sudo systemctl start oracle_scan.service
    sudo systemctl start oracle_content_intel.service
+   sudo systemctl start oracle_adaptation.service
 
  Watch logs:
    journalctl -u oracle_scan.service -f
    journalctl -u oracle_content_intel.service -f
+   journalctl -u oracle_adaptation.service -f
 
  List all scheduled timers + next run time:
    systemctl list-timers

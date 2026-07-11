@@ -1,21 +1,24 @@
 """
-Headless entry point for the Content Intelligence watchlist (Phase 1).
+Headless entry point for the Content Intelligence watchlist (Phase 1 + 2).
 
-Runs ONE pass: process the YouTube watchlist, then the Telegram watchlist
-(skipped gracefully if credentials/session aren't available), extracting via
-whatever `extraction_mode` is configured in config.json (SUBSCRIPTION by
-default) and saving any Strategy Cards found.
+Runs ONE pass: process the YouTube, Telegram, and X watchlists in turn
+(Telegram/X are skipped gracefully if credentials aren't available),
+extracting via whatever `extraction_mode` is configured in config.json
+(SUBSCRIPTION by default) and saving any Strategy Cards found.
 
-Designed to be triggered by .github/workflows/content_intelligence.yml on a
-schedule; also runnable locally:
+Designed to be triggered by a scheduler (systemd timer on the Oracle VM,
+or .github/workflows/content_intelligence.yml if GitHub Actions is in use);
+also runnable locally:
 
     python -m scheduler.content_intelligence_cron
 
-A failure on one source never stops the others (see
-ingestion/youtube_reader.py:process_watchlist and
-ingestion/telegram_reader.py:process_watchlist) — this entry point only
-fails (non-zero exit) on a genuine setup problem, e.g. the database can't be
-initialised at all.
+A failure on one source never stops the others — see
+ingestion/youtube_reader.py:process_watchlist,
+ingestion/telegram_reader.py:process_watchlist, and
+ingestion/twitter_reader.py:process_watchlist (this last one is separate
+from the older config.json trusted_x_accounts mechanism, which still works
+independently). This entry point only fails (non-zero exit) on a genuine
+setup problem, e.g. the database can't be initialised at all.
 """
 
 from __future__ import annotations
@@ -60,7 +63,7 @@ def main() -> int:
     print(f"Extraction mode : {extraction_mode or '(legacy config default)'}")
     print("=" * 70)
 
-    from ingestion import telegram_reader, youtube_reader
+    from ingestion import telegram_reader, twitter_reader, youtube_reader
 
     print("\n📺 YouTube watchlist...")
     yt_summary = youtube_reader.process_watchlist(extraction_mode=extraction_mode)
@@ -83,7 +86,20 @@ def main() -> int:
         for err in tg_summary["errors"]:
             print(f"   ⚠️  {err}")
 
-    total_found = yt_summary["strategies_found"] + tg_summary["strategies_found"]
+    print("\n🐦 X watchlist...")
+    x_summary = twitter_reader.process_watchlist(extraction_mode=extraction_mode)
+    if x_summary.get("skipped_reason"):
+        print(f"   skipped: {x_summary['skipped_reason']}")
+    else:
+        print(f"   sources={x_summary['sources_checked']} "
+              f"posts={x_summary['posts_processed']} "
+              f"strategies={x_summary['strategies_found']} "
+              f"errors={len(x_summary['errors'])}")
+        for err in x_summary["errors"]:
+            print(f"   ⚠️  {err}")
+
+    total_found = (yt_summary["strategies_found"] + tg_summary["strategies_found"]
+                  + x_summary["strategies_found"])
     print(f"\n✅ Run complete — {total_found} new strategy card(s) saved.")
     return 0
 

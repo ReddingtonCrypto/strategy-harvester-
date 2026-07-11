@@ -813,12 +813,14 @@ def _run_cli(argv: list[str]) -> int:
     add_p = sub.add_parser(
         "add-source", help="Add a source to the content-intelligence watchlist.")
     add_p.add_argument(
-        "--type", required=True, choices=["youtube", "telegram"],
-        help="Source type. (X/Twitter has its own separate watchlist — "
-             "manage it via menu option 18, not this command.)")
+        "--type", required=True, choices=["youtube", "telegram", "twitter"],
+        help="Source type. (The older config.json trusted_x_accounts list "
+             "and menu option 18 still work independently of this — adding "
+             "an X account here is a separate watchlist entry.)")
     add_p.add_argument(
         "--identifier", required=True,
-        help="YouTube channel URL/id, or a Telegram @channel username.")
+        help="YouTube channel URL/id, a Telegram @channel username, or an "
+             "X @username.")
     add_p.add_argument("--label", default="", help="Optional human-readable name.")
 
     sub.add_parser("list-sources", help="List all watchlist sources.")

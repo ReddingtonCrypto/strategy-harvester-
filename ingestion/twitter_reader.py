@@ -189,6 +189,108 @@ def scrape_single_account(username: str) -> dict[str, Any]:
             "strategy": card.to_dict() if card else None}
 
 
+def process_watchlist(*, extraction_mode: Optional[str] = None) -> dict[str, Any]:
+    """Process every active X source in the `sources` table (Phase 2).
+
+    Same checkpoint pattern as ingestion/youtube_reader.py and
+    ingestion/telegram_reader.py — but keyed on this table's `sources`
+    entries, NOT config.json's `trusted_x_accounts` list (that older,
+    separate mechanism — list_trusted_accounts()/scrape_all_trusted_accounts()
+    below — is untouched and still works independently via menu option 18).
+
+    Uses the X API's `since_id` for checkpointing (tweet ids are k-sortable,
+    same idea as Telegram's sequential message ids). A failure on one source
+    is logged and does not stop the others. Headless-safe: no input().
+    """
+    from storage import database as db, strategy_store
+    from utils.helpers import utc_now_str
+
+    summary: dict[str, Any] = {"sources_checked": 0, "posts_processed": 0,
+                               "strategies_found": 0, "errors": [],
+                               "skipped_reason": None}
+
+    client = _get_client()
+    if client is None:
+        msg = ("X API credentials missing or tweepy not installed — "
+               "skipping X watchlist processing this run.")
+        print(f"⚠️  [X] {msg}")
+        summary["skipped_reason"] = msg
+        return summary
+
+    sources = db.list_sources(source_type="twitter", active_only=True)
+    if not sources:
+        print("ℹ️  [X] No active X sources in the watchlist.")
+        return summary
+
+    config = load_config()
+    min_likes = int(config.get("x_min_likes", 10))
+    fetch_count = int(config.get("x_posts_to_fetch", 20))
+
+    for source in sources:
+        summary["sources_checked"] += 1
+        username = source["identifier"].lstrip("@")
+        label = source.get("label") or username
+        print(f"🐦 [X] Checking watchlist source: {label} (@{username})")
+        try:
+            user = client.get_user(username=username)
+            if not getattr(user, "data", None):
+                print(f"   ❌ @{username} not found on X.")
+                continue
+
+            checkpoint = source.get("last_item_id")
+            kwargs: dict[str, Any] = {
+                "max_results": min(max(fetch_count, 5), 100),
+                "tweet_fields": ["public_metrics", "created_at"],
+                "exclude": ["retweets", "replies"],
+            }
+            if checkpoint:
+                kwargs["since_id"] = checkpoint
+            resp = client.get_users_tweets(user.data.id, **kwargs)
+            tweets = getattr(resp, "data", None) or []
+
+            if not tweets:
+                print("   – no new posts since last check.")
+                db.update_source_checkpoint(source["id"], utc_now_str())
+                continue
+
+            newest_id = max(int(t.id) for t in tweets)
+            relevant: list[str] = []
+            for t in tweets:
+                metrics = getattr(t, "public_metrics", None) or {}
+                if metrics.get("like_count", 0) < min_likes:
+                    continue
+                if not _has_keyword(t.text):
+                    continue
+                relevant.append(t.text)
+
+            # Advance the checkpoint regardless of relevance — "checked",
+            # not "found something" (same semantics as the other readers).
+            db.update_source_checkpoint(source["id"], utc_now_str(), str(newest_id))
+
+            if not relevant:
+                print(f"   – {len(tweets)} new post(s), none relevant "
+                      f"(< {min_likes} likes or no keyword match).")
+                continue
+
+            print(f"   {len(relevant)} relevant new post(s) — extracting...")
+            combined = "\n\n".join(f"- {tx}" for tx in relevant)
+            card = extract_strategy(combined, source_type="twitter",
+                                    source_url=f"@{username}",
+                                    force_mode=extraction_mode)
+            if card and card.confidence_score > 0:
+                strategy_store.save_card(card)
+                summary["strategies_found"] += 1
+                print(f"   ✅ strategy found: {card.name}")
+            summary["posts_processed"] += len(relevant)
+        except Exception as exc:  # noqa: BLE001 — one bad source shouldn't
+            # stop the rest of the watchlist.
+            print(f"   ❌ Source failed: {exc}")
+            summary["errors"].append(f"{username}: {exc}")
+            continue
+
+    return summary
+
+
 def scrape_all_trusted_accounts() -> dict[str, Any]:
     """Scrape every trusted account; return a summary of what was found."""
     accounts = list_trusted_accounts()
