@@ -60,7 +60,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now oracle_scan.timer
 sudo systemctl enable --now oracle_content_intel.timer
 sudo systemctl enable --now oracle_adaptation.timer
-sudo systemctl enable --now oracle_dashboard.service
+# `enable --now` only calls `start`, which is a no-op if the service is
+# already running (e.g. re-running this script after a code update) — it
+# will NOT pick up a changed ExecStart. Explicitly restart so updates to
+# monitoring/dashboard_server.py actually take effect.
+sudo systemctl enable oracle_dashboard.service
+sudo systemctl restart oracle_dashboard.service
 
 cat <<EOF
 
