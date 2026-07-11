@@ -267,3 +267,94 @@ async def _process_watchlist_async(sources: list[dict], extraction_mode,
         await client.disconnect()
 
     return summary
+
+
+# --- Standalone single-message processing (Phase 4) ---------------------
+#
+# Same spirit as youtube_reader.YouTubeReader.read() for a single video:
+# a one-off "extract this specific thing right now" action, independent of
+# the watchlist/checkpoint system above. Takes a public message LINK
+# (https://t.me/channelname/12345), not a channel name.
+
+def _parse_message_link(url: str) -> tuple[str, int] | None:
+    """Parse a public t.me channel message link into (channel, message_id).
+
+    Returns None if the link isn't in the expected 't.me/<channel>/<id>'
+    form (private/internal 't.me/c/<id>/<id>' links aren't supported).
+    """
+    import re
+
+    m = re.search(r"t\.me/([A-Za-z0-9_]+)/(\d+)", url or "")
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def process_single_message(message_url: str, *, extraction_mode: str | None = None
+                           ) -> dict:
+    """Fetch and extract ONE standalone Telegram message immediately.
+
+    Headless-safe: never calls input() or an interactive login. Returns
+    {"strategy": <name or None>, "error": <message or None>} — check
+    "error" first; a None strategy with no error means the message had no
+    text or no strategy was found in it (not a failure).
+    """
+    result: dict = {"strategy": None, "error": None}
+
+    parsed = _parse_message_link(message_url)
+    if not parsed:
+        result["error"] = ("Could not parse a channel/message id from that link. "
+                           "Expected format: https://t.me/channelname/12345")
+        return result
+    channel, message_id = parsed
+
+    if not _has_credentials():
+        result["error"] = ("Telegram credentials missing (TELEGRAM_API_ID/API_HASH/"
+                           "PHONE) — cannot fetch this message.")
+        return result
+
+    try:
+        return asyncio.run(
+            _process_single_message_async(channel, message_id, extraction_mode))
+    except IngestionError as exc:
+        result["error"] = str(exc)
+        return result
+
+
+async def _process_single_message_async(channel: str, message_id: int,
+                                        extraction_mode: str | None) -> dict:
+    """Async worker behind process_single_message(). See that docstring."""
+    from extraction.strategy_extractor import extract_strategy
+    from storage import strategy_store
+
+    result: dict = {"strategy": None, "error": None}
+    api_id = int(get_env("TELEGRAM_API_ID"))  # validated non-empty by caller
+    api_hash = get_env("TELEGRAM_API_HASH")
+
+    client = _build_client(api_id, api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            result["error"] = (
+                "Telegram session is not authorized. This never attempts an "
+                "interactive login (it would block with no terminal "
+                "attached) — authorize once locally (menu option 3), then "
+                "set TELEGRAM_SESSION_STRING. See SUMMARY_PHASE1.md.")
+            return result
+
+        msg = await client.get_messages(channel, ids=message_id)
+        if not msg or not getattr(msg, "text", None):
+            result["error"] = ("That message has no text, doesn't exist, or "
+                               "isn't accessible (private channel?).")
+            return result
+
+        card = extract_strategy(
+            clean_text(msg.text), source_type="telegram",
+            source_url=f"https://t.me/{channel}/{message_id}",
+            force_mode=extraction_mode)
+        if card and card.confidence_score > 0:
+            strategy_store.save_card(card)
+            result["strategy"] = card.name
+        return result
+    finally:
+        await client.disconnect()

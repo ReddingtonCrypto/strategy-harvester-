@@ -287,23 +287,23 @@ def _recent_content_html(rows: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
-def _video_msg_html(video_msg: str) -> str:
-    if not video_msg:
+def _flash_html(msg: str) -> str:
+    """Render a one-line result/status banner from a 'kind:detail' query value.
+
+    Used after any action that redirects back to `/` with feedback: adding a
+    source, processing a single video/message, etc.
+    """
+    if not msg:
         return ""
-    kind, _, detail = video_msg.partition(":")
-    if kind == "success":
-        return (f'<div class="muted" style="color:var(--win);margin-bottom:8px">'
-                f"✅ Strategy extracted: <b>{_esc(detail)}</b></div>")
-    if kind == "none":
-        return ('<div class="muted" style="margin-bottom:8px">'
-                'ℹ️ No strategy found in that video (or confidence was 0).</div>')
-    if kind == "error":
-        return (f'<div class="muted" style="color:var(--loss);margin-bottom:8px">'
-                f"❌ {_esc(detail)}</div>")
-    return ""
+    kind, _, detail = msg.partition(":")
+    icon_color = {"success": ("✅", "var(--win)"), "error": ("❌", "var(--loss)"),
+                 "info": ("ℹ️", "var(--muted)")}
+    icon, color = icon_color.get(kind, ("ℹ️", "var(--muted)"))
+    return (f'<div class="muted" style="color:{color};margin-bottom:10px">'
+            f"{icon} {_esc(detail)}</div>")
 
 
-def _dashboard_page(video_msg: str = "") -> str:
+def _dashboard_page(msg: str = "") -> str:
     from monitoring import dashboard as static_dashboard
     from storage import database as db
 
@@ -311,7 +311,7 @@ def _dashboard_page(video_msg: str = "") -> str:
     sources = db.list_sources()
     strategy_rows = _strategy_status_rows()
     recent = _recent_content_cards()
-    video_msg_html = _video_msg_html(video_msg)
+    flash_html = _flash_html(msg)
 
     scan = stats["scan"]
     ov = stats["overall"]
@@ -330,6 +330,7 @@ def _dashboard_page(video_msg: str = "") -> str:
   <h1>📡 StrategyHarvester Dashboard</h1>
   <div class="sub">Last scan: <b>{_esc(last_scan)}</b> UTC ·
     data source: <b>{_esc(stats['data_source'])}</b> · live view, auto-refresh 2 min</div>
+  {flash_html}
 
   <div class="grid">
     <div class="card"><div class="label">System</div>
@@ -417,17 +418,30 @@ def _dashboard_page(video_msg: str = "") -> str:
     For a single video you found (not an ongoing channel) — extracts
     immediately, waits for the result, does NOT add anything to the
     watchlist below.</div>
-  {video_msg_html}
   <form class="add-form" method="post" action="/process-video">
     <input type="text" name="video_url" placeholder="https://youtube.com/watch?v=..."
       style="flex:2" required>
     <button type="submit">Extract now</button>
   </form>
 
+  <h2>Process one Telegram message right now</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    For a single message you found (not an ongoing channel) — paste a public
+    message link (right-click a message → Copy Message Link in Telegram).
+    Requires Telegram credentials + an authorized session (see
+    SUMMARY_PHASE1.md); gracefully tells you if that's not set up yet.</div>
+  <form class="add-form" method="post" action="/process-telegram-message">
+    <input type="text" name="message_url" placeholder="https://t.me/channelname/12345"
+      style="flex:2" required>
+    <button type="submit">Extract now</button>
+  </form>
+
   <h2>Content watchlist</h2>
   <div class="muted" style="margin:-4px 0 8px">
-    Ongoing channels/accounts, checked automatically every 4 hours — use a
-    <b>channel</b> URL (e.g. youtube.com/@name), not a single video link.</div>
+    Ongoing channels/accounts — scanned immediately when added, then
+    automatically every 4 hours after that. Use a <b>channel</b> URL (e.g.
+    youtube.com/@name) or a Telegram <b>@channelname</b>, not a single
+    video/message link.</div>
   <div class="scroll">
   <table>
     <thead><tr><th>Type</th><th>Identifier</th><th>Label</th>
@@ -492,10 +506,10 @@ def logout():
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, video_msg: str = ""):
+def index(request: Request, msg: str = ""):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=303)
-    return _dashboard_page(video_msg)
+    return _dashboard_page(msg)
 
 
 @app.post("/process-video")
@@ -514,16 +528,40 @@ def process_video_route(request: Request, video_url: str = Form(...)):
     try:
         text = YouTubeReader().read(url)
     except IngestionError as exc:
-        return RedirectResponse(f"/?video_msg=error:{quote(str(exc))}", status_code=303)
+        return RedirectResponse(f"/?msg=error:{quote(str(exc))}", status_code=303)
     except Exception as exc:  # noqa: BLE001 — never 500 the whole dashboard
-        return RedirectResponse(f"/?video_msg=error:{quote(str(exc))}", status_code=303)
+        return RedirectResponse(f"/?msg=error:{quote(str(exc))}", status_code=303)
 
     card = extract_strategy(text, source_type="youtube", source_url=url,
                             force_mode=extraction_mode)
     if card and card.confidence_score > 0:
         strategy_store.save_card(card)
-        return RedirectResponse(f"/?video_msg=success:{quote(card.name)}", status_code=303)
-    return RedirectResponse("/?video_msg=none", status_code=303)
+        success_text = "Strategy extracted: " + card.name
+        return RedirectResponse(f"/?msg=success:{quote(success_text)}", status_code=303)
+    return RedirectResponse(
+        f"/?msg=info:{quote('No strategy found in that video (or confidence was 0).')}",
+        status_code=303)
+
+
+@app.post("/process-telegram-message")
+def process_telegram_message_route(request: Request, message_url: str = Form(...)):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    from ingestion.telegram_reader import process_single_message
+    from utils.helpers import load_config
+
+    extraction_mode = load_config().get("extraction_mode")
+    result = process_single_message(message_url.strip(), extraction_mode=extraction_mode)
+
+    if result["error"]:
+        return RedirectResponse(f"/?msg=error:{quote(result['error'])}", status_code=303)
+    if result["strategy"]:
+        text = "Strategy extracted: " + result["strategy"]
+        return RedirectResponse(f"/?msg=success:{quote(text)}", status_code=303)
+    return RedirectResponse(
+        f"/?msg=info:{quote('No strategy found in that message (or confidence was 0).')}",
+        status_code=303)
 
 
 @app.post("/sources")
@@ -537,7 +575,16 @@ def add_source_route(request: Request, source_type: str = Form(...),
     from utils.helpers import today_str
 
     db.add_source(source_type, identifier.strip(), label.strip(), today_str())
-    return RedirectResponse("/", status_code=303)
+    # Don't make them wait up to 4 hours for the first check — kick off a
+    # content-intelligence pass right away (background, same mechanism as
+    # the "Run now" button). It re-checks every active source of every
+    # type, not just the one just added, which is fine — that's the same
+    # thing the scheduled timer does anyway.
+    subprocess.Popen([sys.executable, "-m", "scheduler.content_intelligence_cron"],
+                     cwd=str(PROJECT_ROOT))
+    return RedirectResponse(
+        f"/?msg=info:{quote('Source added — scanning now in the background.')}",
+        status_code=303)
 
 
 @app.post("/sources/{source_id}/delete")
