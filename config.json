@@ -114,6 +114,7 @@
   "whisper_model": "base",
   "max_video_size_mb": 500,
   "bulk_channel_default_limit": 20,
+  "watchlist_whisper_max_per_run": 3,
   "delay_between_videos_seconds": 2,
   "skip_already_processed": true,
   "swing_lookback": 2,

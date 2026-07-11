@@ -323,6 +323,18 @@ def process_watchlist(*, extraction_mode: Optional[str] = None) -> dict:
     checkpoint. A failure on one source is logged and does not stop the
     others.
 
+    Whisper fallback IS used here (unlike earlier versions of this
+    function) — youtube-transcript-api's transcript endpoint is blocked
+    outright from some cloud IPs (confirmed live: 20/20 videos in one real
+    channel scan failed identically with YouTube's "blocking requests from
+    your IP" message), so without Whisper, YouTube watchlist monitoring
+    would have a ~0% success rate on such a host. Bounded by
+    `watchlist_whisper_max_per_run` (default 3) across the WHOLE run (not
+    per source) so one run can't take hours transcribing a large backlog —
+    videos beyond the cap are skipped (and still checkpointed, so they are
+    NOT retried next run; same "checked, not necessarily captured"
+    semantics as everything else here).
+
     Returns a summary dict: sources_checked, videos_processed,
     strategies_found, errors (list of "source: message" strings).
     """
@@ -332,6 +344,8 @@ def process_watchlist(*, extraction_mode: Optional[str] = None) -> dict:
 
     config = load_config()
     bootstrap_limit = int(config.get("bulk_channel_default_limit", 20))
+    whisper_model = str(config.get("whisper_model", "base"))
+    whisper_budget = int(config.get("watchlist_whisper_max_per_run", 3))
 
     sources = db.list_sources(source_type="youtube", active_only=True)
     summary = {"sources_checked": len(sources), "videos_processed": 0,
@@ -374,11 +388,17 @@ def process_watchlist(*, extraction_mode: Optional[str] = None) -> dict:
             for v in reversed(new_videos):  # oldest of the new batch first
                 try:
                     text = reader._try_transcript_api(v["id"])
-                    if not text:
+                    if not text and whisper_budget > 0:
+                        print(f"   🧠 {v['title']}: no transcript — trying "
+                              f"Whisper ({whisper_budget} left this run)...")
+                        text = reader._transcribe_with_whisper(v["url"], whisper_model)
+                        whisper_budget -= 1
+                    elif not text:
                         print(f"   ⏭️  {v['title']}: no transcript available "
-                              f"(Whisper fallback not used in watchlist mode) "
-                              f"— skipping.")
-                    else:
+                              f"and this run's Whisper budget is used up — "
+                              f"skipping (won't be retried).")
+
+                    if text:
                         card = extract_strategy(
                             clean_text(text), source_type="youtube",
                             source_url=v["url"], force_mode=extraction_mode)
