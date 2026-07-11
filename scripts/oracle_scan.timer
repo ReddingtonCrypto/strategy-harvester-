@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the StrategyHarvester price scanner every 30 minutes
+
+[Timer]
+# Every 30 min on the clock (:00/:30). GH Actions used an off-peak :07/:37
+# offset to dodge GitHub's own scheduler congestion — that doesn't apply to
+# a self-hosted systemd timer, so a clean cadence is fine here.
+OnCalendar=*:0/30
+Persistent=true
+Unit=oracle_scan.service
+
+[Install]
+WantedBy=timers.target

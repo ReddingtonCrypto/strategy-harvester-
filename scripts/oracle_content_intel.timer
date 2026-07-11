@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the StrategyHarvester content-intelligence watchlist every 4 hours
+
+[Timer]
+# Matches content_intelligence.yml's cadence (heavier than the price
+# scanner — transcript fetching + an LLM call per new item).
+OnCalendar=*-*-* 0/4:20:00
+Persistent=true
+Unit=oracle_content_intel.service
+
+[Install]
+WantedBy=timers.target

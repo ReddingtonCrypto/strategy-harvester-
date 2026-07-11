@@ -40,29 +40,25 @@ else
   echo "    .env already exists; leaving it untouched."
 fi
 
-echo "==> Installing systemd service 'stratharv'..."
-TMP="$(mktemp)"
-sed -e "s#__USER__#${RUN_USER}#g" \
-    -e "s#__PROJECT_DIR__#${PROJECT_DIR}#g" \
-    "$PROJECT_DIR/scripts/oracle_systemd.service" > "$TMP"
-sudo cp "$TMP" /etc/systemd/system/stratharv.service
-rm -f "$TMP"
-sudo systemctl daemon-reload
-sudo systemctl enable stratharv
+echo "==> Base setup complete. Systemd timers are installed separately —"
+echo "    see scripts/setup_oracle_timers.sh (run it next)."
 
 cat <<EOF
 
 ===================================================================
- Setup complete.
+ Base setup complete.
 
  1) Add your secrets:   nano ${PROJECT_DIR}/.env
        (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BINANCE_API_KEY/SECRET,
         CLAUDE_API_KEY, and optionally the X_* keys)
 
- 2) Start the engine:   sudo systemctl start stratharv
- 3) Follow the logs:    journalctl -u stratharv -f
- 4) Health check:       curl http://localhost:8080/
+ 2) Install + start the scheduled timers:
+       chmod +x scripts/setup_oracle_timers.sh
+       ./scripts/setup_oracle_timers.sh
 
- The service auto-starts on boot and auto-restarts on failure.
+ This runs the price scanner every 30 min and the content-intelligence
+ watchlist every 4 hours via systemd timers (the same headless entry
+ points scanner.yml / content_intelligence.yml use in GitHub Actions) —
+ no continuous service, no :8080 health endpoint needed.
 ===================================================================
 EOF

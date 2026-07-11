@@ -1,0 +1,14 @@
+[Unit]
+Description=StrategyHarvester price scanner (one scan cycle)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# __USER__ and __PROJECT_DIR__ are substituted by setup_oracle.sh / manual install.
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PROJECT_DIR__/.venv/bin/python -m scheduler.runner_cron
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stratharv-scan

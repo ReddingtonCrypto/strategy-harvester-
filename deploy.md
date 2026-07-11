@@ -1,13 +1,22 @@
 # Deploying StrategyHarvester on Oracle Cloud (Always Free)
 
-This runs the **24/7 scanner + learning engine** on a free Oracle Cloud VM —
-free forever, no credit-card charges on the Always-Free tier. The engine only
-makes **outbound** calls (Binance, Telegram, Claude), so no inbound ports are
-required.
+Runs the **price scanner** (every 30 min) and the **content-intelligence
+watchlist** (every 4 hours) on a free Oracle Cloud VM — free forever, no
+credit-card charges on the Always-Free tier. Both run as periodic systemd
+timers calling the SAME headless entry points GitHub Actions uses
+(`scheduler.runner_cron` / `scheduler.content_intelligence_cron`), so the VM
+gets exactly the same behavior as the GitHub Actions workflows — dashboard
+generation, `scan_runs` stats, checkpointed watchlist processing — with
+nothing to reconcile between two divergent code paths.
 
-> What runs in the cloud: the live scanner, signal outcome tracking, daily
-> learning/adaptation, X scraping, and the daily Top-50 refresh. Ingestion tools
-> (YouTube/Whisper/images) and the REST API stay on your local machine.
+> **Not a continuous service.** Earlier versions of this doc described a
+> single always-running `systemctl start stratharv` service
+> (`scheduler.runner_prod`). That path predates the dashboard/`scan_runs`
+> instrumentation and the content-intelligence watchlist — it's kept in git
+> history but no longer used. Use the timer-based setup below instead.
+
+The engine only makes **outbound** calls (Binance, Telegram, Claude), so no
+inbound ports are required.
 
 ---
 
@@ -27,9 +36,8 @@ In the console: **Compute → Instances → Create Instance**.
 
 ## Step 3 — Networking
 
-**Nothing to open.** The engine is outbound-only. (The health endpoint listens
-on `:8080` but you only need it locally — leave the firewall closed unless you
-want to reach it remotely.)
+**Nothing to open.** Everything here is outbound-only — no health endpoint,
+no inbound ports needed.
 
 ## Step 4 — SSH into the VM
 
@@ -37,24 +45,29 @@ want to reach it remotely.)
 ssh -i /path/to/your_key ubuntu@<PUBLIC_IP>
 ```
 
-## Step 5 — Get the project onto the VM and run setup
+## Step 5 — Get the project onto the VM and run base setup
 
-Copy the project up (from your local machine):
 ```bash
-# option A: scp a zip
-scp -i your_key strategy_harvester.zip ubuntu@<PUBLIC_IP>:~/
-# then on the VM:  unzip strategy_harvester.zip
-# option B: git clone <your repo>   (if you've pushed it somewhere)
-```
-Then on the VM:
-```bash
-cd ~/strategy_harvester
+git clone https://github.com/ReddingtonCrypto/strategy-harvester-.git strategy_harvester
+cd strategy_harvester
 chmod +x scripts/setup_oracle.sh
 ./scripts/setup_oracle.sh
 ```
 This installs Python 3.11, creates the venv, installs `requirements_prod.txt`,
-creates runtime folders, copies `.env` from the template, and installs +
-enables the `stratharv` systemd service.
+creates runtime folders, and copies `.env` from the template.
+
+Then install the content-intelligence dependencies into the same venv:
+```bash
+./.venv/bin/python -m pip install -r requirements_content_intel.txt
+```
+
+If you want SUBSCRIPTION-mode extraction (the config.json default —
+`"extraction_mode"`) to work on this VM, also install the Claude Code CLI:
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g @anthropic-ai/claude-code
+```
 
 ## Step 6 — Fill in your secrets
 
@@ -63,27 +76,34 @@ nano ~/strategy_harvester/.env
 ```
 Required for live alerts: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
 `BINANCE_API_KEY`/`BINANCE_API_SECRET`. For daily learning: `CLAUDE_API_KEY`.
+For SUBSCRIPTION-mode extraction: `CLAUDE_CODE_OAUTH_TOKEN`. For the Telegram
+content-intelligence watchlist: `TELEGRAM_API_ID`/`API_HASH`/`PHONE` plus
+`TELEGRAM_SESSION_STRING` (see SUMMARY_PHASE1.md for how to generate one).
 Optional: the `X_*` keys for sentiment/scraping. Save with `Ctrl+O`, `Ctrl+X`.
 
-## Step 7 — Start the service
+## Step 7 — Install and start the timers
 
 ```bash
-sudo systemctl start stratharv
+chmod +x scripts/setup_oracle_timers.sh
+./scripts/setup_oracle_timers.sh
 ```
-It also auto-starts on boot and auto-restarts on failure (10 s delay).
+This installs and starts two independent systemd timer/service pairs:
+- `oracle_scan.timer` → `oracle_scan.service` — price scanner, every 30 min.
+- `oracle_content_intel.timer` → `oracle_content_intel.service` — content
+  watchlist, every 4 hours.
 
 ## Step 8 — Watch the logs
 
 ```bash
-journalctl -u stratharv -f
+journalctl -u oracle_scan.service -f
+journalctl -u oracle_content_intel.service -f
 ```
-You should see the startup banner, `👂 Approval listener active`, the health
-endpoint line, and the first scan running across the Top-50 coins.
 
 ## Step 9 — Verify Telegram
 
-Check your phone for the **"🚀 Signal Engine started"** message. That confirms
-the bot token + chat id are correct and live alerts will arrive.
+Once `oracle_scan.service` has run at least once, check your phone for scan
+activity / heartbeat messages (per `heartbeat_enabled` in `config.json`) —
+that confirms the bot token + chat id are correct.
 
 ---
 
@@ -91,24 +111,27 @@ the bot token + chat id are correct and live alerts will arrive.
 
 | Action | Command |
 |---|---|
-| Status | `systemctl status stratharv` |
-| Start / stop / restart | `sudo systemctl {start,stop,restart} stratharv` |
-| Live logs | `journalctl -u stratharv -f` |
-| Health JSON | `curl http://localhost:8080/` |
-| Update config (coins, thresholds) | edit `config.json`, then `sudo systemctl restart stratharv` |
-
-The health endpoint returns:
-```json
-{"status":"alive","version":"5.6","last_scan":"2026-…","signals_today":0,"uptime":"3h 12m"}
-```
+| List all timers + next run time | `systemctl list-timers` |
+| Status | `systemctl status oracle_scan.timer` / `oracle_content_intel.timer` |
+| Run immediately (don't wait for the schedule) | `sudo systemctl start oracle_scan.service` / `oracle_content_intel.service` |
+| Stop a timer | `sudo systemctl stop oracle_scan.timer` |
+| Live logs | `journalctl -u oracle_scan.service -f` |
+| Update config (coins, thresholds) | edit `config.json` — picked up on the next scheduled run automatically, nothing to restart |
+| Add a YouTube/Telegram watchlist source | `python main.py add-source --type youtube --identifier "..." --label "..."` |
+| List watchlist sources | `python main.py list-sources` |
 
 ## Notes
-- **Logs:** captured by journald *and* written to `logs/stratharv_YYYYMMDD.log`
-  (files older than 7 days auto-deleted).
-- **DB safety:** the SQLite DB is auto-backed-up to `backups/` (last 10) on every
-  startup before any migration.
-- **Clean shutdown:** `systemctl stop` sends SIGTERM → the engine stops the
-  approval listener and sends a Telegram shutdown notice.
-- **Resilience:** a crash in the engine loop is caught, alerted to Telegram, and
-  the loop restarts after 30 s; a single coin's fetch failure is skipped, never
-  crashing the scan.
+- **State persistence:** unlike the GitHub Actions workflows (which commit
+  the DB back to git because runners are ephemeral), this VM's disk is
+  persistent — `strategy_harvester.db` just lives on disk between runs. No
+  git push needed for day-to-day operation. `git pull` when you want to
+  deploy a code update.
+- **DB safety:** the SQLite DB is auto-backed-up to `backups/` (last 10) on
+  every run, before any migration.
+- **Resilience:** each timer fires an independent one-shot run — a failure in
+  one run (or one coin, or one watchlist source) doesn't affect the next
+  scheduled run or any other source; see `journalctl` for per-run errors.
+- **If you also run the GitHub Actions workflows**, disable them
+  (`scanner.yml` / `content_intelligence.yml`) or you'll get two independent
+  databases evolving separately — the VM's local disk and whatever GitHub
+  Actions last committed to git will diverge.
