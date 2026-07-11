@@ -138,15 +138,22 @@ def init_db() -> None:
             )
 
             # --- Tracked sources ----------------------------------------
+            # last_checked_at / last_item_id (added Phase 1 of the
+            # autonomous watchlist): per-source checkpoint so a re-run only
+            # fetches content newer than what was already processed.
+            # last_item_id's meaning depends on source_type: a YouTube video
+            # id, or a Telegram message id (stored as text either way).
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_type TEXT,
-                    identifier  TEXT,        -- channel handle / url
-                    label       TEXT,
-                    active      INTEGER DEFAULT 1,
-                    date_added  TEXT,
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type    TEXT,
+                    identifier     TEXT,        -- channel handle / url
+                    label          TEXT,
+                    active         INTEGER DEFAULT 1,
+                    date_added     TEXT,
+                    last_checked_at TEXT,
+                    last_item_id   TEXT,
                     UNIQUE(source_type, identifier)
                 )
                 """
@@ -389,6 +396,11 @@ def init_db() -> None:
                         "WHERE target_price IS NULL")
             cur.execute("UPDATE signals SET stop_price=0 "
                         "WHERE stop_price IS NULL")
+            # Watchlist checkpoint columns (Phase 1 content-intelligence
+            # autonomy) — safe no-op if the table was just created above
+            # with them already; needed for pre-existing live databases.
+            _ensure_columns(cur, "sources", {
+                "last_checked_at": "TEXT", "last_item_id": "TEXT"})
             conn.commit()
         print(f"✅ Database ready at {DB_PATH}")
     except sqlite3.Error as exc:
@@ -551,15 +563,53 @@ def add_source(source_type: str, identifier: str, label: str = "",
         print(f"❌ Failed to add source '{identifier}': {exc}")
 
 
-def list_sources() -> list[dict[str, Any]]:
-    """Return all tracked sources."""
+def list_sources(source_type: Optional[str] = None,
+                 active_only: bool = False) -> list[dict[str, Any]]:
+    """Return tracked sources, optionally filtered by type and/or active flag."""
+    query = "SELECT * FROM sources"
+    clauses: list[str] = []
+    params: list[Any] = []
+    if source_type:
+        clauses.append("source_type = ?")
+        params.append(source_type)
+    if active_only:
+        clauses.append("active = 1")
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id"
     try:
         with get_connection() as conn:
-            rows = conn.execute("SELECT * FROM sources ORDER BY id").fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error as exc:
         print(f"❌ Failed to list sources: {exc}")
         return []
+
+
+def update_source_checkpoint(source_id: int, last_checked_at: str,
+                             last_item_id: Optional[str] = None) -> bool:
+    """Update a source's checkpoint after a watchlist processing pass.
+
+    Always advances `last_checked_at` (so we know the source was looked at
+    even when nothing new was found). `last_item_id` is only overwritten
+    when a value is given — a "checked, nothing new" pass shouldn't erase a
+    previously-known checkpoint.
+    """
+    try:
+        with get_connection() as conn:
+            if last_item_id is not None:
+                cur = conn.execute(
+                    "UPDATE sources SET last_checked_at = ?, last_item_id = ? "
+                    "WHERE id = ?", (last_checked_at, last_item_id, source_id))
+            else:
+                cur = conn.execute(
+                    "UPDATE sources SET last_checked_at = ? WHERE id = ?",
+                    (last_checked_at, source_id))
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error as exc:
+        print(f"❌ Failed to update checkpoint for source id={source_id}: {exc}")
+        return False
 
 
 # --- Learning insights (Phase 4) ----------------------------------------

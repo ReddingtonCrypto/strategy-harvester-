@@ -57,6 +57,7 @@
     "1D"
   ],
   "manual_mode": true,
+  "extraction_mode": "subscription",
   "messages_to_fetch": 50,
   "min_confidence_score": 60,
   "backtest_months": 12,

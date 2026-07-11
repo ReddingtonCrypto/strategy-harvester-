@@ -279,3 +279,107 @@ def bulk_process_channel(channel_url: str, limit: Optional[int] = None,
     print("   Run backtest via menu option 6")
     return {"checked": len(videos), "found": found, "skipped": skipped,
             "saved": saved}
+
+
+# --- Watchlist processing (Phase 1: autonomous content intelligence) ----
+#
+# Unlike bulk_process_channel() above (interactive/manual, no checkpoint),
+# this reads its channel list from the `sources` table and only looks at
+# videos newer than each source's stored checkpoint. Designed to run
+# headlessly (no input() calls) from a scheduled job — see
+# scheduler/content_intelligence_cron.py.
+#
+# Whisper fallback is deliberately NOT attempted here: it's slow/heavy
+# (torch + ffmpeg) and unsuitable for an unattended batch job with several
+# channels. Videos with no existing transcript are skipped (and still
+# checkpointed, so they aren't retried forever) — use the interactive
+# single-video option (menu 1) locally to backfill those with Whisper.
+
+def process_watchlist(*, extraction_mode: Optional[str] = None) -> dict:
+    """Process every active YouTube source in the `sources` table.
+
+    For each source: fetch its video list, take only videos newer than the
+    stored `last_item_id` checkpoint (or, on a source's first run, the most
+    recent `bulk_channel_default_limit` videos — never the whole channel
+    history), extract + save any strategies found, then advance the
+    checkpoint. A failure on one source is logged and does not stop the
+    others.
+
+    Returns a summary dict: sources_checked, videos_processed,
+    strategies_found, errors (list of "source: message" strings).
+    """
+    from extraction.strategy_extractor import extract_strategy
+    from storage import database as db, strategy_store
+    from utils.helpers import clean_text, load_config, utc_now_str
+
+    config = load_config()
+    bootstrap_limit = int(config.get("bulk_channel_default_limit", 20))
+
+    sources = db.list_sources(source_type="youtube", active_only=True)
+    summary = {"sources_checked": len(sources), "videos_processed": 0,
+              "strategies_found": 0, "errors": []}
+    if not sources:
+        print("ℹ️  [YouTube] No active YouTube sources in the watchlist.")
+        return summary
+
+    reader = YouTubeReader()
+    for source in sources:
+        identifier = source["identifier"]
+        label = source.get("label") or identifier
+        print(f"📺 [YouTube] Checking watchlist source: {label} ({identifier})")
+        try:
+            videos = fetch_channel_videos(identifier)
+            if not videos:
+                print("   ⚠️  No videos found (private/empty channel, or a "
+                      "network issue) — skipping this pass.")
+                continue
+
+            checkpoint = source.get("last_item_id")
+            if checkpoint:
+                new_videos = []
+                for v in videos:
+                    if v["id"] == checkpoint:
+                        break
+                    new_videos.append(v)
+            else:
+                # First run for this source: bound the initial batch rather
+                # than backfilling the channel's entire history.
+                new_videos = videos[:bootstrap_limit]
+
+            if not new_videos:
+                print("   – no new videos since last check.")
+                db.update_source_checkpoint(source["id"], utc_now_str())
+                continue
+
+            print(f"   {len(new_videos)} new video(s) to check.")
+            newest_seen = checkpoint
+            for v in reversed(new_videos):  # oldest of the new batch first
+                try:
+                    text = reader._try_transcript_api(v["id"])
+                    if not text:
+                        print(f"   ⏭️  {v['title']}: no transcript available "
+                              f"(Whisper fallback not used in watchlist mode) "
+                              f"— skipping.")
+                    else:
+                        card = extract_strategy(
+                            clean_text(text), source_type="youtube",
+                            source_url=v["url"], force_mode=extraction_mode)
+                        if card and card.confidence_score > 0:
+                            strategy_store.save_card(card)
+                            summary["strategies_found"] += 1
+                            print(f"   ✅ strategy found: {card.name}")
+                        summary["videos_processed"] += 1
+                    newest_seen = v["id"]
+                except Exception as exc:  # noqa: BLE001 — never let one
+                    # video's failure abort the source's remaining videos.
+                    print(f"   ❌ Error processing video {v.get('id')}: {exc}")
+                    summary["errors"].append(f"{identifier}:{v.get('id')}: {exc}")
+
+            db.update_source_checkpoint(source["id"], utc_now_str(), newest_seen)
+        except Exception as exc:  # noqa: BLE001 — one bad source shouldn't
+            # stop the rest of the watchlist.
+            print(f"   ❌ Source failed: {exc}")
+            summary["errors"].append(f"{identifier}: {exc}")
+            continue
+
+    return summary

@@ -47,10 +47,36 @@ Content:
 # Claude model used for AUTO mode (latest small, fast, capable model).
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+# Claude model used for SUBSCRIPTION mode (same tier as AUTO — Haiku).
+_SUBSCRIPTION_MODEL = "claude-haiku-4-5-20251001"
+
+_VALID_MODES = ("manual", "auto", "subscription")
+
 
 def build_prompt(content: str) -> str:
     """Return the full extraction prompt with content injected."""
     return EXTRACTION_PROMPT.replace("[CONTENT]", content or "")
+
+
+def _resolve_mode(force_mode: Optional[str], config: dict,
+                  api_key: Optional[str]) -> str:
+    """Decide which extraction mode to use, in priority order:
+
+    1. An explicit `force_mode` argument (headless callers, tests).
+    2. config.json's `"extraction_mode"` key, if set to a valid value —
+       the primary switch: edit config.json to move between "manual",
+       "auto", and "subscription" without touching code.
+    3. Legacy fallback for configs written before `extraction_mode`
+       existed: the original CLAUDE_API_KEY + `manual_mode` boolean check.
+    """
+    if force_mode in _VALID_MODES:
+        return force_mode
+    configured = config.get("extraction_mode")
+    if configured in _VALID_MODES:
+        return configured
+    if api_key and not config.get("manual_mode", True):
+        return "auto"
+    return "manual"
 
 
 def extract_strategy(
@@ -84,24 +110,14 @@ def extract_strategy(
 
     config = load_config()
     api_key = get_env("CLAUDE_API_KEY")
-
-    # Decide mode: explicit override > API key presence + config flag.
-    if force_mode in ("manual", "auto"):
-        mode = force_mode
-    elif api_key and not config.get("manual_mode", True):
-        mode = "auto"
-    elif api_key and config.get("manual_mode", True):
-        # Key exists but config prefers manual — respect config, mention auto.
-        print("ℹ️  [Extractor] CLAUDE_API_KEY found but manual_mode=true in "
-              "config.json. Using MANUAL mode.")
-        mode = "manual"
-    else:
-        mode = "manual"
+    mode = _resolve_mode(force_mode, config, api_key)
 
     print(f"🧩 [Extractor] Running in {mode.upper()} mode.")
 
     if mode == "auto":
         extracted = _extract_auto(raw_text, api_key)
+    elif mode == "subscription":
+        extracted = _extract_subscription(raw_text)
     else:
         extracted = _extract_manual(raw_text)
 
@@ -194,5 +210,69 @@ def _extract_auto(raw_text: str, api_key: str) -> Optional[dict]:
     parsed = extract_json(text)
     if parsed is None:
         print("❌ [Extractor] Could not parse JSON from Claude's response.")
+        return None
+    return parsed
+
+
+# --- SUBSCRIPTION mode -----------------------------------------------------
+
+def _extract_subscription(raw_text: str) -> Optional[dict]:
+    """Call the local `claude` CLI headlessly instead of a billed API key.
+
+    Uses whatever auth the CLI already has configured on this machine — an
+    existing interactive `claude` login locally, or a
+    CLAUDE_CODE_OAUTH_TOKEN environment variable in CI (see
+    scheduler/content_intelligence_cron.py). CLAUDE_API_KEY /
+    ANTHROPIC_API_KEY are explicitly stripped from the subprocess's
+    environment so this mode can never fall back to a billed API key by
+    accident.
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("claude") is None:
+        print("❌ [Extractor] 'claude' CLI not found on PATH — cannot use "
+              "SUBSCRIPTION mode. Install Claude Code, or switch "
+              "\"extraction_mode\" in config.json to \"manual\" or \"auto\".")
+        return None
+
+    prompt = build_prompt(raw_text)
+    env = dict(os.environ)
+    env.pop("CLAUDE_API_KEY", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    cmd = ["claude", "-p", prompt, "--output-format", "json",
+           "--model", _SUBSCRIPTION_MODEL]
+    try:
+        print("🔑 [Extractor] Calling local Claude CLI (subscription mode)...")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120,
+            env=env, check=False)
+    except subprocess.TimeoutExpired:
+        print("❌ [Extractor] Claude CLI call timed out after 120s.")
+        return None
+    except OSError as exc:
+        print(f"❌ [Extractor] Could not run the Claude CLI: {exc}")
+        return None
+
+    if result.returncode != 0:
+        print(f"❌ [Extractor] Claude CLI exited {result.returncode}: "
+              f"{result.stderr.strip()[:500]}")
+        return None
+
+    try:
+        envelope = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"❌ [Extractor] Could not parse Claude CLI JSON output: {exc}")
+        return None
+
+    # `claude -p ... --output-format json` wraps the reply in an envelope
+    # (type/session_id/... plus the actual text under "result").
+    text = envelope.get("result", "") if isinstance(envelope, dict) else ""
+    parsed = extract_json(text)
+    if parsed is None:
+        print("❌ [Extractor] Could not parse a strategy from the CLI response.")
         return None
     return parsed

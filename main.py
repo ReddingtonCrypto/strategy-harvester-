@@ -792,6 +792,66 @@ ACTIONS = {
 }
 
 
+def _run_cli(argv: list[str]) -> int:
+    """Handle headless CLI subcommands (Phase 1 watchlist source management).
+
+    Separate from the interactive menu below — `python main.py` with no
+    arguments still launches the menu unchanged; `python main.py <command>`
+    runs one action and exits. Returns a process exit code.
+    """
+    import argparse
+
+    from utils.helpers import today_str
+
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="StrategyHarvester headless commands. Run with no "
+                     "arguments for the interactive menu instead.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    add_p = sub.add_parser(
+        "add-source", help="Add a source to the content-intelligence watchlist.")
+    add_p.add_argument(
+        "--type", required=True, choices=["youtube", "telegram"],
+        help="Source type. (X/Twitter has its own separate watchlist — "
+             "manage it via menu option 18, not this command.)")
+    add_p.add_argument(
+        "--identifier", required=True,
+        help="YouTube channel URL/id, or a Telegram @channel username.")
+    add_p.add_argument("--label", default="", help="Optional human-readable name.")
+
+    sub.add_parser("list-sources", help="List all watchlist sources.")
+
+    args = parser.parse_args(argv)
+
+    strategy_store.init()
+    from storage import database as db
+
+    if args.command == "add-source":
+        db.add_source(args.type, args.identifier, args.label, today_str())
+        print(f"✅ Added {args.type} source: {args.identifier}"
+              + (f" ({args.label})" if args.label else ""))
+        return 0
+
+    if args.command == "list-sources":
+        sources = db.list_sources()
+        if not sources:
+            print("No sources in the watchlist yet. Add one with:\n"
+                  '  python main.py add-source --type youtube --identifier '
+                  '"https://youtube.com/@name" --label "Some Channel"')
+            return 0
+        for s in sources:
+            status = "active" if s["active"] else "inactive"
+            checked = s["last_checked_at"] or "never"
+            item = s["last_item_id"] or "-"
+            print(f"[{s['id']}] {s['source_type']:8} {s['identifier']:40} "
+                  f"({status}) last_checked={checked} last_item_id={item}")
+        return 0
+
+    return 1  # pragma: no cover — argparse enforces a valid subcommand
+
+
 def main() -> None:
     """Run the interactive terminal menu loop."""
     # Make sure the database/schema exists before anything else.
@@ -819,6 +879,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        sys.exit(_run_cli(sys.argv[1:]))
     try:
         main()
     except KeyboardInterrupt:

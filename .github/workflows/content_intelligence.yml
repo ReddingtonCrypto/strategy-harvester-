@@ -1,0 +1,106 @@
+name: StrategyHarvester Content Intelligence
+
+# Watchlist-driven content ingestion (YouTube + Telegram) — Phase 1 of the
+# autonomous watchlist system. Separate from scanner.yml (the 30-min price
+# scanner) because this is heavier per run: a transcript/message fetch plus
+# an LLM extraction call for every new item. Every 4 hours is a starting
+# cadence, not a hard requirement — trading-strategy content doesn't need
+# 30-min polling, and this keeps CI minutes / Claude usage reasonable.
+# Adjust the cron expression below if you want it faster or slower.
+#
+# ===== Required GitHub secret (must be added manually — nothing here
+# invents a value; see SUMMARY_PHASE1.md for how to generate it) =====
+#   CLAUDE_CODE_OAUTH_TOKEN   Auth for the `claude` CLI in SUBSCRIPTION mode
+#                             (config.json "extraction_mode"). Without this,
+#                             every extraction call in this workflow will
+#                             fail gracefully (logged, not saved) — nothing
+#                             crashes, but nothing gets extracted either.
+#
+# ===== Optional secrets (Telegram watchlist is skipped gracefully, with a
+# clear log line, if these are absent) =====
+#   TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE   from my.telegram.org
+#   TELEGRAM_SESSION_STRING   a pre-authorized Telethon StringSession,
+#                             generated ONCE locally — this workflow can
+#                             never complete an interactive login (no
+#                             terminal to type a login code into), so
+#                             without this the run will log "not authorized"
+#                             and skip Telegram even if the three API
+#                             credentials above are set.
+
+on:
+  schedule:
+    - cron: "20 */4 * * *"   # every 4 hours, offset from scanner.yml's :07/:37
+  workflow_dispatch: {}       # allow manual "Run workflow" from the Actions tab
+
+permissions:
+  contents: write
+
+# Deliberately shares scanner.yml's concurrency group rather than having its
+# own. Both workflows commit to strategy_harvester.db, a BINARY file — git
+# cannot auto-merge a binary conflict if they raced. Sharing the group means
+# GitHub Actions never runs a price-scan and a content-intelligence pass at
+# the same time, so they can't collide on the DB. This run may occasionally
+# have to wait for a price-scan to finish first; that's fine, content
+# ingestion isn't time-sensitive the way live trading signals are.
+concurrency:
+  group: scanner
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20        # heavier than scanner.yml's 10 — several
+                                # transcript fetches + LLM calls per run
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_content_intel.txt
+
+      - name: Set up Node.js (for the Claude CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        # ASSUMPTION (verify before relying on this workflow — see
+        # SUMMARY_PHASE1.md): this is the published npm package for the
+        # Claude Code CLI as of this writing. If the package name or
+        # install method has changed, this step fails, `claude` won't be on
+        # PATH, and every SUBSCRIPTION-mode extraction call will fail
+        # gracefully (logged per-source, run still exits 0) rather than
+        # saving any strategies.
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run content intelligence watchlist
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN:  ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TELEGRAM_API_ID:          ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH:        ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_PHONE:           ${{ secrets.TELEGRAM_PHONE }}
+          TELEGRAM_SESSION_STRING:  ${{ secrets.TELEGRAM_SESSION_STRING }}
+        run: python -m scheduler.content_intelligence_cron
+
+      - name: Commit updated state back to repo
+        if: always()           # persist any progress even if the run errored
+        run: |
+          git config user.name  "stratharv-bot"
+          git config user.email "stratharv-bot@users.noreply.github.com"
+          git add -f strategy_harvester.db
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "chore(content-intel): watchlist run $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

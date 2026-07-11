@@ -1,0 +1,25 @@
+# ===== StrategyHarvester — Content Intelligence (Phase 1) dependencies =====
+# Only what content_intelligence.yml / scheduler/content_intelligence_cron.py
+# needs on the server. Kept separate from requirements_prod.txt (the price
+# scanner) because it needs a different subset — Telethon here, but no ccxt/
+# pandas/numpy (no market data in this workflow).
+#
+# Deliberately EXCLUDED (heavy, local-only, not run in this CI workflow):
+#   openai-whisper, torch, numba   (local audio/video transcription —
+#                                    process_watchlist() skips videos with no
+#                                    existing transcript rather than using
+#                                    Whisper; run the interactive menu
+#                                    locally to backfill those)
+#   yt-dlp's audio-download path   (yt-dlp itself IS installed, for the
+#                                    lightweight channel-video-listing call —
+#                                    it just won't be used to download audio)
+#   fastapi, uvicorn, tweepy       (not used by this workflow)
+#
+# NOTE: the `claude` CLI (used by SUBSCRIPTION-mode extraction) is installed
+# separately in the workflow via npm — see content_intelligence.yml.
+
+python-dotenv==1.2.2       # load .env locally (no-op in CI, secrets come via env)
+pydantic==2.13.4            # StrategyCard model
+youtube-transcript-api      # YouTube transcript fetch (no auth needed)
+yt-dlp                      # YouTube channel video listing
+telethon                    # Telegram channel reader

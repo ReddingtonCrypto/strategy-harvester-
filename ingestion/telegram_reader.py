@@ -114,3 +114,156 @@ class TelegramReader(BaseReader):
 def read_telegram(channel: str, limit: int = 50) -> str:
     """Shortcut: return combined text from a public Telegram channel."""
     return TelegramReader().read(channel, limit=limit)
+
+
+# --- Watchlist processing (Phase 1: autonomous content intelligence) ----
+#
+# Reads its channel list from the `sources` table and only fetches messages
+# newer than each source's stored checkpoint (Telegram message ids are
+# sequential per channel, so a plain integer comparison — via Telethon's
+# `min_id` — is enough). Designed to run headlessly: unlike the interactive
+# `read()` above, this NEVER calls `client.start(phone=...)`, which would
+# block on input() for a login code with no terminal attached. Instead it
+# only uses an already-authorized session — either the local file-based
+# session created once interactively (menu option 3), or a portable
+# TELEGRAM_SESSION_STRING env var for CI. If neither is authorized, or the
+# three base credentials are missing, this returns a clear "skipped" result
+# instead of raising, so a scheduled job can log it and move on.
+
+def _has_credentials() -> bool:
+    """True if the three base Telegram API credentials are all present."""
+    return bool(get_env("TELEGRAM_API_ID") and get_env("TELEGRAM_API_HASH")
+                and get_env("TELEGRAM_PHONE"))
+
+
+def _build_client(api_id: int, api_hash: str):
+    """Build a Telethon client, preferring a portable session for headless use.
+
+    `TELEGRAM_SESSION_STRING` (a Telethon StringSession) is checked first —
+    required for CI, since there's no local file system state to persist a
+    session between runs. Falls back to the same local file-based session
+    the interactive reader uses, for local/manual runs.
+    """
+    from telethon import TelegramClient
+
+    session_string = get_env("TELEGRAM_SESSION_STRING")
+    if session_string:
+        from telethon.sessions import StringSession
+
+        return TelegramClient(StringSession(session_string), api_id, api_hash)
+    return TelegramClient(_SESSION_NAME, api_id, api_hash)
+
+
+def process_watchlist(*, extraction_mode: "str | None" = None) -> dict:
+    """Process every active Telegram source in the `sources` table.
+
+    Headless-safe: never blocks on input(). Returns a summary dict —
+    sources_checked, messages_processed, strategies_found, errors (list of
+    "source: message" strings), and skipped_reason (set + logged instead of
+    raising when credentials/session aren't available).
+    """
+    summary: dict = {"sources_checked": 0, "messages_processed": 0,
+                     "strategies_found": 0, "errors": [], "skipped_reason": None}
+
+    if not _has_credentials():
+        msg = ("Telegram credentials missing (need TELEGRAM_API_ID, "
+               "TELEGRAM_API_HASH, TELEGRAM_PHONE) — skipping Telegram "
+               "watchlist processing this run.")
+        print(f"⚠️  [Telegram] {msg}")
+        summary["skipped_reason"] = msg
+        return summary
+
+    from storage import database as db
+
+    sources = db.list_sources(source_type="telegram", active_only=True)
+    if not sources:
+        print("ℹ️  [Telegram] No active Telegram sources in the watchlist.")
+        return summary
+
+    try:
+        return asyncio.run(_process_watchlist_async(sources, extraction_mode, summary))
+    except IngestionError as exc:
+        print(f"⚠️  [Telegram] {exc}")
+        summary["skipped_reason"] = str(exc)
+        return summary
+
+
+async def _process_watchlist_async(sources: list[dict], extraction_mode,
+                                   summary: dict) -> dict:
+    """Async worker behind process_watchlist(). See that function's docstring."""
+    from extraction.strategy_extractor import extract_strategy
+    from storage import database as db, strategy_store
+    from utils.helpers import load_config, utc_now_str
+
+    api_id = int(get_env("TELEGRAM_API_ID"))  # validated non-empty by caller
+    api_hash = get_env("TELEGRAM_API_HASH")
+    fetch_limit = int(load_config().get("messages_to_fetch", 50))
+
+    client = _build_client(api_id, api_hash)
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            raise IngestionError(
+                "Telegram session is not authorized. This function never "
+                "attempts an interactive login (it would block on input() "
+                "with no terminal attached). Authorize once locally — e.g. "
+                "via the interactive menu (option 3) — then set "
+                "TELEGRAM_SESSION_STRING for headless/CI use. "
+                "See SUMMARY_PHASE1.md."
+            )
+
+        for source in sources:
+            summary["sources_checked"] += 1
+            identifier = source["identifier"]
+            label = source.get("label") or identifier
+            try:
+                channel = TelegramReader._normalise_channel(identifier)
+                print(f"📡 [Telegram] Checking watchlist source: {label} (@{channel})")
+
+                checkpoint = source.get("last_item_id")
+                min_id = int(checkpoint) if checkpoint else 0
+                messages: list[str] = []
+                newest_id = min_id
+                async for msg in client.iter_messages(
+                        channel, min_id=min_id, limit=fetch_limit):
+                    if msg.id > newest_id:
+                        newest_id = msg.id
+                    if msg.text:
+                        messages.append(msg.text)
+
+                if newest_id == min_id:
+                    print("   – no new messages since last check.")
+                    db.update_source_checkpoint(source["id"], utc_now_str())
+                    continue
+
+                if not messages:
+                    # New messages existed (ids advanced) but none had text
+                    # (media-only posts) — still advance the checkpoint.
+                    print("   – new messages found but none had text.")
+                    db.update_source_checkpoint(
+                        source["id"], utc_now_str(), str(newest_id))
+                    continue
+
+                messages.reverse()  # oldest -> newest reads more naturally
+                combined = clean_text("\n\n".join(messages))
+                print(f"   {len(messages)} new message(s) — extracting...")
+                card = extract_strategy(
+                    combined, source_type="telegram", source_url=channel,
+                    force_mode=extraction_mode)
+                if card and card.confidence_score > 0:
+                    strategy_store.save_card(card)
+                    summary["strategies_found"] += 1
+                    print(f"   ✅ strategy found: {card.name}")
+                summary["messages_processed"] += len(messages)
+
+                db.update_source_checkpoint(
+                    source["id"], utc_now_str(), str(newest_id))
+            except Exception as exc:  # noqa: BLE001 — one bad source
+                # shouldn't stop the rest of the watchlist.
+                print(f"   ❌ Source failed: {exc}")
+                summary["errors"].append(f"{identifier}: {exc}")
+                continue
+    finally:
+        await client.disconnect()
+
+    return summary
