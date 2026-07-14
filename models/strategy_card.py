@@ -121,6 +121,17 @@ class StrategyCard(BaseModel):
         indicators, conditions, etc.); source metadata is attached here.
         """
         data = dict(extracted or {})
+
+        # Claude sometimes returns confidence_score on a 0-1 scale (e.g. 0.9)
+        # instead of the 0-100 integer scale the prompt asks for, and/or as a
+        # float with a fractional part (e.g. 85.5) — the field is a strict
+        # int, so normalize both cases instead of letting pydantic reject it.
+        score = data.get("confidence_score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            if 0 < score <= 1:
+                score = score * 100
+            data["confidence_score"] = int(round(score))
+
         data.update(
             source_type=source_type,
             source_url=source_url,
