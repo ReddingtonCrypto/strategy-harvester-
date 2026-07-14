@@ -312,9 +312,11 @@ def _flash_html(msg: str) -> str:
 
 
 def _dashboard_page(msg: str = "") -> str:
+    from ingestion import media_reader
     from monitoring import dashboard as static_dashboard
     from storage import database as db
 
+    media_reader_formats = media_reader.VIDEO_FORMATS | media_reader.AUDIO_FORMATS
     stats = static_dashboard.build_stats()
     sources = db.list_sources()
     strategy_rows = _strategy_status_rows()
@@ -491,6 +493,27 @@ def _dashboard_page(msg: str = "") -> str:
   </form>
   <div class="hint">Can take up to a minute. The button will say "Working…"
     and the page will reload with a result when it's done.</div>
+
+  <h2>Upload a video or audio recording</h2>
+  <div class="muted" style="margin:-4px 0 8px">
+    Transcribed locally on the VM with Whisper (free, offline — no upload to
+    YouTube/anyone), then extracted with Claude Opus 4.8. Supported:
+    {', '.join(sorted(media_reader_formats))}. This VM is small — keep clips
+    short (a few minutes) or expect a long wait; a long/large file can take
+    several minutes to transcribe.</div>
+  <form class="add-form" method="post" action="/process-media"
+    enctype="multipart/form-data" style="flex-direction:column">
+    <input type="file" name="media_file"
+      accept="video/mp4,video/quicktime,video/x-matroska,video/x-msvideo,video/webm,
+        audio/mpeg,audio/wav,audio/mp4,audio/aac"
+      style="width:100%;margin-bottom:8px" required>
+    <input type="text" name="notes" placeholder="Notes about the video (optional)"
+      style="width:100%;margin-bottom:8px">
+    <button type="submit">Extract now</button>
+  </form>
+  <div class="hint">Can take several minutes for longer files. The button
+    will say "Working…" — please don't close the tab until the page reloads
+    with a result.</div>
 
   <h2>Process one Telegram message right now</h2>
   <div class="muted" style="margin:-4px 0 8px">
@@ -694,6 +717,66 @@ async def process_image_route(request: Request, image_file: UploadFile = File(..
         return RedirectResponse(f"/?msg=success:{quote(success_text)}", status_code=303)
     return RedirectResponse(
         f"/?msg=info:{quote('No clear strategy found in that image.')}", status_code=303)
+
+
+@app.post("/process-media")
+async def process_media_route(request: Request, media_file: UploadFile = File(...),
+                              notes: str = Form("")):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=303)
+
+    import tempfile
+
+    from ingestion import media_reader
+    from utils.helpers import load_config
+
+    ext = (media_file.filename or "").rsplit(".", 1)[-1].lower()
+    supported = media_reader.VIDEO_FORMATS | media_reader.AUDIO_FORMATS
+    if ext not in supported:
+        return RedirectResponse(
+            f"/?msg=error:{quote('Unsupported format .' + ext + '. Supported: ' + ', '.join(sorted(supported)))}",
+            status_code=303)
+
+    data = await media_file.read()
+    max_mb = float(load_config().get("max_video_size_mb", 500))
+    if len(data) / (1024 * 1024) > max_mb:
+        return RedirectResponse(
+            f"/?msg=error:{quote(f'File is over the {max_mb:.0f}MB limit.')}",
+            status_code=303)
+
+    tmp_dir = Path(tempfile.gettempdir()) / "strategy_harvester_media"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"upload_{int(time.time() * 1000)}.{ext}"
+    tmp_path.write_bytes(data)
+
+    try:
+        result = media_reader.read_local_media(str(tmp_path))
+        if not result:
+            detail = media_reader.LAST_ERROR or "Could not transcribe that file."
+            return RedirectResponse(f"/?msg=error:{quote(detail)}", status_code=303)
+
+        text = result["text"]
+        note_text = notes.strip()
+        if note_text:
+            text = f"[USER NOTES]: {note_text}\n\n{text}"
+
+        import extraction.strategy_extractor as extractor
+        from storage import strategy_store
+
+        card = extractor.extract_strategy(
+            text, source_type=result["source_type"], source_url=result["source_label"],
+            model=extractor.OPUS_MODEL)
+        if card and card.confidence_score > 0:
+            strategy_store.save_card(card)
+            success_text = "Strategy extracted: " + card.name
+            return RedirectResponse(f"/?msg=success:{quote(success_text)}", status_code=303)
+        if extractor.LAST_ERROR:
+            return RedirectResponse(
+                f"/?msg=error:{quote(extractor.LAST_ERROR)}", status_code=303)
+        return RedirectResponse(
+            f"/?msg=info:{quote('No strategy found in that recording.')}", status_code=303)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 @app.post("/process-telegram-message")

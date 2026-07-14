@@ -21,6 +21,18 @@ from utils.helpers import clean_text, load_config
 VIDEO_FORMATS = {"mp4", "mov", "mkv", "avi", "webm"}
 AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac"}
 
+# Set by read_local_media()/_transcribe() right before returning None on a
+# real failure — lets callers (the dashboard upload route) surface the
+# actual reason instead of a generic message. Reset at the top of every
+# read_local_media() call.
+LAST_ERROR: Optional[str] = None
+
+
+def _set_error(msg: str) -> None:
+    global LAST_ERROR
+    LAST_ERROR = msg
+    print(f"❌ [Media] {msg}")
+
 # Whisper model cache kept on E: (alongside the project), not the C: home dir.
 _MODEL_DIR = Path(__file__).resolve().parent.parent / ".whisper_models"
 
@@ -31,10 +43,13 @@ def read_local_media(file_path: str) -> Optional[dict[str, Any]]:
     Returns a dict {text, source_type, source_label} or None on failure.
     `source_type` is 'local_video' or 'local_audio'.
     """
+    global LAST_ERROR
+    LAST_ERROR = None
+
     try:
         path = _normalise_path(file_path)
     except IngestionError as exc:
-        print(f"❌ {exc}")
+        _set_error(str(exc))
         return None
 
     ext = path.suffix.lower().lstrip(".")
@@ -55,6 +70,8 @@ def read_local_media(file_path: str) -> Optional[dict[str, Any]]:
 
     text = _transcribe(path, is_video)
     if not text:
+        if not LAST_ERROR:
+            _set_error("Whisper produced an empty transcript (no speech detected).")
         return None
 
     cleaned = clean_text(text)
@@ -88,9 +105,7 @@ def _transcribe(path: Path, is_video: bool) -> Optional[str]:
     try:
         import whisper  # openai-whisper
     except ImportError:
-        print("❌ [Media] openai-whisper is not installed.\n"
-              "    Install it into the project's venv (it pulls in torch):\n"
-              "    .venv\\Scripts\\python.exe -m pip install openai-whisper")
+        _set_error("openai-whisper is not installed in this environment.")
         return None
 
     model_name = str(load_config().get("whisper_model", "base"))
@@ -105,7 +120,6 @@ def _transcribe(path: Path, is_video: bool) -> Optional[str]:
         result = model.transcribe(str(path))
         return result.get("text", "")
     except Exception as exc:
-        print(f"❌ [Media] Transcription failed: {exc}\n"
-              f"    (Most often this means ffmpeg is missing or the file is "
-              f"corrupt.)")
+        _set_error(f"Transcription failed: {exc} (most often this means "
+                   f"ffmpeg is missing or the file is corrupt).")
         return None
